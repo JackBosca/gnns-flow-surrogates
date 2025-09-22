@@ -11,6 +11,10 @@ class GraphTrajectoryLoader():
     Iterable dataset that loads trajectories from the cylinder flow h5 files and yields graphs.
     Each trajectory is opened and read as needed, with a limit on the number of open trajectories.
     Within each trajectory, frames are read in random order, so that the model sees a variety of data.
+    The pool of opened trajectories is implemented for the following advantages:
+    - Memory efficiency (don't keep all data in RAM),
+    - Fair coverage (all trajectories and frames get used exactly at least once per epoch),
+    - Randomization (frames within a trajectory are shuffled).
 
     ------------------- Epoch 1 -------------------
     Shuffled Trajectories: T2, T0, T3, T1
