@@ -1,10 +1,10 @@
-from torch.utils.data import IterableDataset
-import os, numpy as np
-import h5py
-from torch_geometric.data import Data
-import torch
+import os
+import numpy as np
 import math
-import time
+import h5py
+import torch
+from torch.utils.data import IterableDataset
+from torch_geometric.data import Data
 
 class GraphTrajectoryLoader():
     '''
