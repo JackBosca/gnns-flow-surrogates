@@ -170,6 +170,8 @@ class GraphTrajectoryLoader():
     def __next__(self):
         '''
         Yield the next graph sample for training.
+        Based on this, a batch will generally consist of random frames from 
+        random trajectories: batch = { (traj_i, t_i, t_i+1) for i=1..B }.
         '''
         self.check_and_close_traj()
         self.open_traj()
