@@ -1,6 +1,5 @@
 from torch.utils.data import IterableDataset
 import os, numpy as np
-import os.path as osp
 import h5py
 from torch_geometric.data import Data
 import torch
@@ -210,6 +209,113 @@ class GraphTrajectoryLoader():
         # the current structure is ("pos", "node_type", "velocity", "cells", "pressure", "time")
         g = self.datas_to_graph(datas)
   
+        return g
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return len(self.datasets)
+
+class TrajectoryIterableDataset(IterableDataset):
+    def __init__(self, max_epochs, dataset_dir, split='train'):
+        super().__init__()
+
+        self.max_epochs = max_epochs
+
+        self.dataset_path = os.path.join(dataset_dir, split + '.h5')
+        # check that the dataset file exists
+        assert os.path.isfile(self.dataset_path), f'{self.dataset_path} not exist'
+        print('Dataset ready:', self.dataset_path)
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+
+        # open HDF5 locally inside this worker process
+        file_handle = h5py.File(self.dataset_path, 'r')
+        n_keys = len(file_handle)
+
+        # if no worker info, return the full iterator
+        if worker_info is None:
+            iter_start, iter_end = 0, n_keys
+        else:
+            per_worker = int(math.ceil(n_keys / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, n_keys)
+
+        # define the keys on this worker
+        keys = list(file_handle.keys())
+        keys = keys[iter_start:iter_end]
+
+        # if this worker has no assigned keys, return an empty iterator
+        if len(keys) == 0:
+            file_handle.close()
+            return iter([])
+
+        # map key -> HDF5 group
+        files = {k: file_handle[k] for k in keys}
+
+        # create and return worker-local GraphTrajectoryLoader
+        return GraphTrajectoryLoader(max_epochs=self.max_epochs, files=files)
+    
+class TrajectoryRolloutDataset(IterableDataset):
+    def __init__(self, dataset_dir, split='test'):
+
+        self.dataset_path = os.path.join(dataset_dir, split + '.h5')
+        # check that the dataset file exists
+        assert os.path.isfile(self.dataset_path), f'{self.dataset_path} not exist'
+
+        self.file_handle = h5py.File(self.dataset_path, "r")
+        self.data_keys =  ("pos", "node_type", "velocity", "cells", "pressure")
+        self.time_interval = 0.01
+
+        # load the selected split dataset
+        self.load_dataset()
+
+    def load_dataset(self):
+        datasets = list(self.file_handle.keys())
+        self.datasets = datasets
+
+    def change_file(self, file_index):
+        '''
+        Change to a different trajectory file by index.
+        '''
+        file_index = self.datasets[file_index]
+        self.cur_traj = self.file_handle[file_index]
+
+        # extract the current trajectory length from velocity
+        self.cur_traj_len = self.cur_traj['velocity'].shape[0]
+        if self.cur_traj_len < 3:
+            raise ValueError("Trajectory too short for t -> t+1 samples")
+    
+        self.cur_traj_index = 0
+
+    def __next__(self):
+        # if all trajectories have been processed, stop iteration
+        if self.cur_traj_index >= (self.cur_traj_len - 1):
+            raise StopIteration
+
+        # extract data for the current frame and the next frame
+        data = self.cur_traj
+        selected_frame = self.cur_traj_index
+
+        datas = []
+        for k in self.data_keys:
+            if k in ["velocity", "pressure"]:
+                r = np.array((data[k][selected_frame], data[k][selected_frame + 1]), dtype=np.float32)
+            else:
+                r = data[k][selected_frame]
+                if k in ["node_type", "cells"]:
+                    r = r.astype(np.int32)
+            datas.append(r)
+
+        # add time information
+        datas.append(np.array([self.time_interval * selected_frame], dtype=np.float32))
+
+        self.cur_traj_index += 1
+        g = GraphTrajectoryLoader.datas_to_graph(datas)
+
         return g
 
     def __iter__(self):
