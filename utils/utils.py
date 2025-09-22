@@ -1,25 +1,18 @@
+import enum
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
 
-# def decompose_graph(graph):
-#     '''
-#     Decomposes a torch_geometric.data.Data object into its components.
-#     '''
-#     # initialize components
-#     x, edge_index, edge_attr, global_attr = None, None, None, None
-#     for key in graph.keys():
-#         if key == "x":
-#             x = graph.x
-#         elif key == "edge_index":
-#             edge_index = graph.edge_index
-#         elif key == "edge_attr":
-#             edge_attr = graph.edge_attr
-#         elif key == "global_attr":
-#             global_attr = graph.global_attr
-#         else:
-#             pass
-#     return (x, edge_index, edge_attr, global_attr)
+class NodeType(enum.IntEnum):
+    """Enumeration for different types of nodes in the graph."""
+    NORMAL = 0
+    OBSTACLE = 1
+    AIRFOIL = 2
+    HANDLE = 3
+    INFLOW = 4
+    OUTFLOW = 5
+    WALL_BOUNDARY = 6
+    SIZE = 9
 
 def decompose_graph(graph):
     '''
@@ -32,7 +25,6 @@ def decompose_graph(graph):
     
     return x, edge_index, edge_attr, global_attr
 
-
 def copy_geometric_data(graph):
     '''
     Return a copy of torch_geometric.data.data.Data object.
@@ -43,6 +35,41 @@ def copy_geometric_data(graph):
     g_copy.global_attr = global_attr
 
     return g_copy
+
+def get_velocity_noise(graph, noise_std, device):
+    '''
+    Generates Gaussian noise to perturb node velocities during training.
+
+    This implements noise injection, a technique used in MeshGraphNets to
+    improve rollout stability. At inference, the model relies on its own
+    past predictions instead of ground-truth velocities, which introduces
+    small errors that can accumulate over time. Adding noise during training
+    simulates these prediction errors so the model learns to correct them,
+    leading to more stable long-term predictions.
+
+    Noise is applied only to fluid nodes (NodeType.NORMAL), while boundary
+    and obstacle nodes remain unperturbed to respect physical constraints.
+
+    Args:
+        graph (torch_geometric.data.Data): Input graph with node features.
+        noise_std (float): Standard deviation of Gaussian noise.
+        device (torch.device): Device for the returned tensor.
+
+    Returns:
+        torch.Tensor: Noise tensor of shape (num_nodes, 2), zeroed for
+                      non-fluid nodes.
+    '''
+    velocity_sequence = graph.x[:, 1:3]   # node velocities (2D)
+    type = graph.x[:, 0]                  # node type (scalar, e.g. boundary vs fluid)
+    
+    # sample Gaussian noise of same shape as velocities
+    noise = torch.normal(std=noise_std, mean=0.0, size=velocity_sequence.shape).to(device)
+
+    # mask out boundary/obstacle nodes — apply noise only to "normal" (fluid) nodes
+    mask = type != NodeType.NORMAL
+    noise[mask] = 0
+    
+    return noise.to(device)
 
 class Normalizer(nn.Module):
     '''
