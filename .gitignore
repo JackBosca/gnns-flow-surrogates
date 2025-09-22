@@ -1,2 +1,8 @@
 # Slurm jobs files
 slurm_files/
+
+# Python cache files
+__pycache__/
+
+# Checkpoint files
+checkpoint/
