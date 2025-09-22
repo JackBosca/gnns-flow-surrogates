@@ -61,3 +61,20 @@ class NodeBlock(nn.Module):
         # return updated graph
         return Data(x=x, edge_attr=edge_attr, edge_index=graph.edge_index)
        
+def build_mlp(in_size, hidden_size, out_size, num_hidden_layers=3, lay_norm=True):
+    layers = [nn.Linear(in_size, hidden_size), nn.ReLU()]
+    
+    # Add hidden layers dynamically
+    for _ in range(num_hidden_layers - 1):  # already added the first hidden layer
+        layers.append(nn.Linear(hidden_size, hidden_size))
+        layers.append(nn.ReLU())
+    
+    # Output layer
+    layers.append(nn.Linear(hidden_size, out_size))
+    
+    module = nn.Sequential(*layers)
+    
+    if lay_norm:
+        return nn.Sequential(module, nn.LayerNorm(normalized_shape=out_size))
+    
+    return module
