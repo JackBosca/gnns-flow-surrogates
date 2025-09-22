@@ -1,3 +1,51 @@
+"""
+Encode-process-decode GNN for 2D cylinder-flow velocity updates.
+
+## Key components
+
+* Encoder: MLPs map raw node/edge features -> latent H.
+* Processor: K x (EdgeBlock -> NodeBlock) message-passing layers with
+  residuals. Each layer keeps node/edge size = H.
+* Decoder: MLP maps node latent H -> output (2D velocity delta).
+* Simulator: wraps model, handles normalization, training vs inference,
+  noise injection, save/load.
+
+## Data layout (PyG `Data`)
+
+* graph.x        : [N, Din]  raw node features (e.g. [type_onehot, vx, vy])
+* graph.edge_attr: [E, Dein] raw edge features
+* graph.edge_index: [2, E]   senders = edge_index[0], receivers = edge_index[1]
+* Encoder -> outputs x: [N, H], edge_attr: [E, H]
+* Decoder -> outputs: [N, 2]
+
+## Per-block operations (GNNBlock)
+
+1. Edge update (EdgeBlock): for each edge e (i->j)
+   * collected = [x[i], x[j], edge_attr[e]]  # -> [3H]
+   * edge_attr'[e] = edge_mlp(collected)     # -> [H]
+
+2. Node update (NodeBlock): for each node j
+   * agg = sum(edge_attr' for edges with receiver j)  # -> [H]
+   * collected = [x[j], agg]                          # -> [2H]
+   * x'[j] = node_mlp(collected)                      # -> [H]
+
+3. Residuals: x <- x + x', edge_attr <- edge_attr + edge_attr'
+
+## Shapes summary
+
+* N: nodes, E: edges, H: hidden_size
+* Raw: x [N, Din], edge_attr [E, Dein]
+* Encoded: x [N, H], edge_attr [E, H]
+* Output: [N, 2]
+
+## Training vs Inference (Simulator.forward)
+
+* Training: add `velocity_sequence_noise` to frames, build node_attr,
+  predict normalized delta, return (pred, normalized_target_delta).
+* Inference: build node_attr from frames, predict, denormalize delta,
+  return frames + delta (predicted velocity).
+"""
+
 import os
 import torch
 import torch.nn as nn
