@@ -92,7 +92,7 @@ if __name__ == '__main__':
     dataset_dir = "/work/scitas-share/boscario/cylinder_flow_h5"
 
     # ----- batch options -----
-    batch_size = 64
+    batch_size = 20
     print_batch = 20
     save_batch = 200
 
@@ -101,7 +101,7 @@ if __name__ == '__main__':
 
     # ----- dataset & loader -----
     dataset_cylinder = TrajectoryIterableDataset(dataset_dir=dataset_dir, split='train', max_epochs=10)
-    train_loader = DataLoader(dataset=dataset_cylinder, batch_size=batch_size, num_workers=10)
+    train_loader = DataLoader(dataset=dataset_cylinder, batch_size=batch_size, num_workers=12)
 
     # ----- transforms -----
     transformer = T.Compose([T.FaceToEdge(), T.Cartesian(norm=False), T.Distance(norm=False)])
