@@ -1,7 +1,6 @@
-import torch
-import matplotlib.pyplot as plt
-import numpy as np
 import argparse
+import matplotlib.pyplot as plt
+import torch
 
 
 def plot_losses(losses_path='checkpoint/losses.pt', save_path="loss_plot.png", show=False):
