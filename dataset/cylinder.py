@@ -36,7 +36,7 @@ class IndexedTrajectoryDataset(Dataset):
         Data: A PyG Data object for the specified time step.
     """
     def __init__(self, dataset_dir, split='train', time_interval=0.01, cache_static=False,
-                 preserve_one_hot=False):
+                 preserve_one_hot=False, transform=None):
         super().__init__()
         self.dataset_path = os.path.join(dataset_dir, f'{split}.h5')
         if not os.path.isfile(self.dataset_path):
@@ -46,11 +46,15 @@ class IndexedTrajectoryDataset(Dataset):
         self.cache_static = bool(cache_static)
         self.preserve_one_hot = bool(preserve_one_hot)
 
+        # allow passing a PyG transform (e.g. T.Compose([...]))
+        self.transform = transform
+
         # lazy HDF5 file handle per-process
         self._h5 = None
 
         # static cache per trajectory key
-        self._static_cache = {}  # traj_key -> dict with 'pos','cells','node_type' when cached
+        # traj_key -> dict with 'pos','cells','node_type', and (cached transform outputs)
+        self._static_cache = {}  # traj_key -> dict
 
         # Build metadata (open file only briefly to inspect shapes)
         traj_keys = []
@@ -423,4 +427,56 @@ class IndexedTrajectoryDataset(Dataset):
         # compute time scalar feature
         time_scalar = float(self.time_interval * t)
         
-        return self._datas_to_graph(pos, node_type, vel_t, vel_tp1, cells, press_t, time_scalar)
+        data = self._datas_to_graph(pos, node_type, vel_t, vel_tp1, cells, press_t, time_scalar)
+
+        # ---- apply transform (if any) and optionally cache edge_index/edge_attr ----
+        # only cache edge_index/edge_attr (transform outputs) per trajectory when cache_static=True
+        if self.transform is not None:
+            traj_key = self.traj_keys[traj_pos]
+            # ensure there is a dict for this trajectory
+            traj_cache = self._static_cache.setdefault(traj_key, {})
+
+            # if already cached transform outputs for this trajectory, reuse them
+            if self.cache_static and ('edge_index' in traj_cache):
+                # attach cached fields to data (avoid re-running the transform)
+                data.edge_index = traj_cache['edge_index']
+                # edge_attr may be None if transform didn't produce it
+                if 'edge_attr' in traj_cache and traj_cache['edge_attr'] is not None:
+                    data.edge_attr = traj_cache['edge_attr']
+            else:
+                # run the transform (this will create edge_index/edge_attr, etc.)
+                data = self.transform(data)
+
+                # if cache_static -> store the transform outputs for this trajectory
+                if self.cache_static:
+                    # save edge_index and edge_attr (if present) for reuse
+                    traj_cache['edge_index'] = data.edge_index
+                    traj_cache['edge_attr'] = getattr(data, 'edge_attr', None)
+                    # also keep pos/cells/node_type if not already cached (your _load_and_maybe_cache may have done this)
+                    traj_cache.setdefault('pos', pos)
+                    traj_cache.setdefault('cells', cells)
+                    traj_cache.setdefault('node_type', node_type)
+        
+        # ensure 'face' attribute is always present so DataLoader batching is consistent
+        # face may be None if transform removed it
+        # `cells` is the array loaded earlier in this __getitem__ (n_faces x 3 or 3 x n_faces)
+        if not hasattr(data, 'face') or data.face is None:
+            try:
+                # make sure cells is numpy array with shape (F,3) or (3,F)
+                cells_arr = np.asarray(cells)
+                if cells_arr.ndim == 2:
+                    # if cells shape is (F,3) convert to (3,F) for PyG face convention, then to tensor
+                    if cells_arr.shape[1] == 3 and cells_arr.shape[0] != 3:
+                        face_t = torch.as_tensor(cells_arr.T, dtype=torch.long)
+                    elif cells_arr.shape[0] == 3:
+                        face_t = torch.as_tensor(cells_arr, dtype=torch.long)
+                    else:
+                        # fallback: try to transpose
+                        face_t = torch.as_tensor(cells_arr.T, dtype=torch.long)
+                    data.face = face_t
+            except Exception as e:
+                # don't crash dataset on weird cells; just warn and continue
+                import warnings
+                warnings.warn(f"Could not attach face attribute in dataset __getitem__: {e}")
+
+        return data

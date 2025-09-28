@@ -49,9 +49,6 @@ def train(
         model.train()
 
         for batch_index, graph in enumerate(dataloader):
-            # apply transforms
-            graph = transformer(graph)
-
             # move graph to device
             graph = graph.to(device)
 
@@ -125,7 +122,7 @@ if __name__ == '__main__':
     parser.add_argument('--save-batch', type=int, default=200)
     parser.add_argument('--noise-std', type=float, default=2e-2)
     parser.add_argument('--workers', type=int, default=12)
-    parser.add_argument('--max-epochs', type=int, default=5, help='Number of epochs to train for')
+    parser.add_argument('--max-epochs', type=int, default=5)
     args = parser.parse_args()
 
     # ----- device -----
@@ -137,9 +134,18 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(simulator.parameters(), lr=1e-4)
     print('Optimizer initialized')
 
+    # ----- transforms -----
+    transformer = T.Compose([T.FaceToEdge(), T.Cartesian(norm=False), T.Distance(norm=False)])
+
     # ----- dataset & loader -----
-    dataset_cylinder = IndexedTrajectoryDataset(dataset_dir=args.dataset_dir, split='train',
-                                               time_interval=0.01, cache_static=True)
+    dataset_cylinder = IndexedTrajectoryDataset(
+        dataset_dir=args.dataset_dir,
+        split='train',
+        time_interval=0.01,
+        cache_static=True,
+        transform=transformer,            
+        preserve_one_hot=False
+    )
 
     train_loader = DataLoader(dataset=dataset_cylinder,
                               batch_size=args.batch_size,
@@ -147,9 +153,6 @@ if __name__ == '__main__':
                               num_workers=args.workers,
                               pin_memory=True,
                               persistent_workers=True)
-
-    # ----- transforms -----
-    transformer = T.Compose([T.FaceToEdge(), T.Cartesian(norm=False), T.Distance(norm=False)])
 
     # ----- start training -----
     train(

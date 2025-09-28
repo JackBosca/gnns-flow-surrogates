@@ -25,7 +25,6 @@ def parse_args():
     p.add_argument("--dataset_dir", type=str, required=True, help="path to dataset directory containing train/val/test .h5 files")
     p.add_argument("--test_split", type=str, default='test', help="which split file to open (train/val/test)")
     p.add_argument("--rollout_num", type=int, default=1, help="how many trajectories to rollout (first N trajectories)")
-    p.add_argument("--transform", default=True, action='store_true', help="apply FaceToEdge + Cartesian + Distance transforms to each graph")
     p.add_argument("--preserve_one_hot", action='store_true', help="pass preserve_one_hot to dataset if desired")
     p.add_argument("--cache_static", action='store_true', help="cache static arrays from HDF5 (pos/cells/node_type)")
     return p.parse_args()
@@ -54,14 +53,13 @@ def rollout_error(predicteds, targets):
 
 
 @torch.no_grad()
-def rollout_one_trajectory(model, dataset, traj_index, transformer=None, device='cpu'):
+def rollout_one_trajectory(model, dataset, traj_index, device='cpu'):
     """
     Iterate sequentially through frames of trajectory traj_index from the IndexedTrajectoryDataset.
     Args:
       model: the Simulator model (in eval mode)
       dataset: an IndexedTrajectoryDataset instance
       traj_index: which trajectory to rollout (0..len(dataset.traj_keys)-1)
-      transformer: optional transform to apply to each graph (e.g. FaceToEdge + Cartesian + Distance)
       device: torch device to use
     Returns:
       result = [predicteds_array, targets_array], crds
@@ -86,11 +84,8 @@ def rollout_one_trajectory(model, dataset, traj_index, transformer=None, device=
     for local_t in tqdm(range(count), total=count, desc=f"traj {traj_index}"):
         global_idx = start_idx + local_t
 
-        # get graph at this timestep
+        # get graph at this timestep and move to device
         graph = dataset[global_idx] 
-        if transformer is not None:
-            graph = transformer(graph)
-        # move tensors to device
         graph = graph.to(device)
 
         # compute mask once (based on node_type feature at column 0)
@@ -148,19 +143,17 @@ def main():
     simulator.eval()
     simulator.to(device)
 
+    transformer = T.Compose([T.FaceToEdge(), T.Cartesian(norm=False), T.Distance(norm=False)])
+
     # instantiate dataset
     dataset = IndexedTrajectoryDataset(
         dataset_dir=args.dataset_dir,
         split=args.test_split,
         time_interval=0.01,
         cache_static=args.cache_static,
+        transform=transformer,
         preserve_one_hot=args.preserve_one_hot
-    )
-
-    # optional transforms
-    transformer = None
-    if args.transform:
-        transformer = T.Compose([T.FaceToEdge(), T.Cartesian(norm=False), T.Distance(norm=False)])
+    )   
 
     os.makedirs('results', exist_ok=True)
 
@@ -168,7 +161,7 @@ def main():
     n_trajs = min(args.rollout_num, len(dataset.traj_keys))
     for i in range(n_trajs):
         print(f"Starting rollout on trajectory {i} (key={dataset.traj_keys[i]})")
-        result, coords = rollout_one_trajectory(simulator, dataset, traj_index=i, transformer=transformer, device=device)
+        result, coords = rollout_one_trajectory(simulator, dataset, traj_index=i, device=device)
         predicteds, targets = result
 
         # save results
