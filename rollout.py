@@ -18,18 +18,6 @@ from utils.utils import NodeType
 from model.model import Simulator
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description='MeshGraphNets rollout for flow past a cylinder')
-    p.add_argument("--gpu", type=int, default=0, help="GPU id (0,1,...) or -1 for CPU")
-    p.add_argument("--model_dir", type=str, default='checkpoint/simulator.pth', help="path to checkpoint file of trained model")
-    p.add_argument("--dataset_dir", type=str, required=True, help="path to dataset directory containing train/val/test .h5 files")
-    p.add_argument("--test_split", type=str, default='test', help="which split file to open (train/val/test)")
-    p.add_argument("--rollout_num", type=int, default=1, help="how many trajectories to rollout (first N trajectories)")
-    p.add_argument("--preserve_one_hot", action='store_true', help="pass preserve_one_hot to dataset if desired")
-    p.add_argument("--cache_static", action='store_true', help="cache static arrays from HDF5 (pos/cells/node_type)")
-    return p.parse_args()
-
-
 def rollout_error(predicteds, targets):
     """
     Compute and print RMSE at intervals, return array of RMSE at each step.
@@ -53,7 +41,7 @@ def rollout_error(predicteds, targets):
 
 
 @torch.no_grad()
-def rollout_one_trajectory(model, dataset, traj_index, device='cpu'):
+def rollout_one_trajectory(model, dataset, traj_index, device='cpu', max_steps=None, enforce_mask=True):
     """
     Iterate sequentially through frames of trajectory traj_index from the IndexedTrajectoryDataset.
     Args:
@@ -61,6 +49,8 @@ def rollout_one_trajectory(model, dataset, traj_index, device='cpu'):
       dataset: an IndexedTrajectoryDataset instance
       traj_index: which trajectory to rollout (0..len(dataset.traj_keys)-1)
       device: torch device to use
+      max_steps: if not None, limit to this many steps (for validation)
+      enforce_mask: if True, enforce boundary conditions by copying ground-truth velocity for boundary nodes
     Returns:
       result = [predicteds_array, targets_array], crds
       predicteds_array.shape = (T, N, vel_dim), targets_array same
@@ -71,9 +61,17 @@ def rollout_one_trajectory(model, dataset, traj_index, device='cpu'):
         raise IndexError(f"traj_index {traj_index} out of range (0..{len(dataset.traj_keys)-1})")
 
     start_idx = int(dataset.traj_cumsum[traj_index])
-    count = int(dataset.traj_counts[traj_index])  # number of usable samples (t in 0..n_frames-2)
-    if count <= 0:
+    total_count = int(dataset.traj_counts[traj_index])  # number of usable samples (t in 0..n_frames-2)
+    if total_count <= 0:
         raise RuntimeError(f"Trajectory {traj_index} contains no usable samples")
+
+    # determine actual number of steps to run
+    if max_steps is None:
+        count = total_count
+    else:
+        count = min(total_count, int(max_steps))
+    if count <= 0:
+        raise RuntimeError(f"Requested max_steps={max_steps} yielded zero steps for trajectory {traj_index}")
 
     predicteds = []
     targets = []
@@ -113,7 +111,7 @@ def rollout_one_trajectory(model, dataset, traj_index, device='cpu'):
 
         # enforce boundary (mask): copy ground-truth for masked nodes
         # mask True = nodes to force -> predicted_velocity[mask] = next_v[mask]
-        if mask.any():
+        if enforce_mask and mask.any():
             predicted_velocity[mask] = next_v[mask]
 
         predicteds.append(predicted_velocity.detach().cpu().numpy())
@@ -127,7 +125,15 @@ def rollout_one_trajectory(model, dataset, traj_index, device='cpu'):
 
 
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(description='MeshGraphNets rollout for flow past a cylinder')
+    parser.add_argument("--gpu", type=int, default=0, help="GPU id (0,1,...) or -1 for CPU")
+    parser.add_argument("--model_dir", type=str, default='checkpoint/simulator.pth', help="path to checkpoint file of trained model")
+    parser.add_argument("--dataset_dir", type=str, required=True, help="path to dataset directory containing train/val/test .h5 files")
+    parser.add_argument("--test_split", type=str, default='test', help="which split file to open (train/val/test)")
+    parser.add_argument("--rollout_num", type=int, default=1, help="how many trajectories to rollout (first N trajectories)")
+    parser.add_argument("--preserve_one_hot", action='store_true', help="pass preserve_one_hot to dataset if desired")
+    parser.add_argument("--cache_static", action='store_true', help="cache static arrays from HDF5 (pos/cells/node_type)")
+    args = parser.parse_args()
 
     # device selection
     if args.gpu >= 0 and torch.cuda.is_available():
