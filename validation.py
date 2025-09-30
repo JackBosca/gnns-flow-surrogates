@@ -66,6 +66,14 @@ def validate_rollouts(
         predicteds, targets = result
 
         # compute per-step RMSE for this trajectory
+        # Per-timestep error (computed per trajectory):
+        #      mse_t = (1 / (N*D)) * sum_{i=1..N} sum_{d=1..D} (predicteds[t,i,d] - targets[t,i,d])**2
+        #      rmse_t = sqrt(mse_t)
+        # Aggregation across K trajectories:
+        #  - pad per-trajectory rmse vectors to length L with NaN for missing tails
+        #  - mean_rmse[t] = nanmean_k arr[k,t]
+        #  - std_rmse[t]  = nanstd_k  arr[k,t]
+        #  (later timesteps may have fewer contributing trajectories)
         squared_diff = np.square(predicteds - targets).reshape(predicteds.shape[0], -1)
         mse_per_step = np.mean(squared_diff, axis=1)
         rmse_per_step = np.sqrt(mse_per_step)  # (T,)
