@@ -12,3 +12,6 @@ tests/
 
 # old versions
 _old/
+
+# results
+results/
