@@ -161,7 +161,7 @@ def main():
         preserve_one_hot=args.preserve_one_hot
     )   
 
-    os.makedirs('results', exist_ok=True)
+    os.makedirs('rollout', exist_ok=True)
 
     # rollout over the first args.rollout_num trajectories
     n_trajs = min(args.rollout_num, len(dataset.traj_keys))
@@ -171,7 +171,7 @@ def main():
         predicteds, targets = result
 
         # save results
-        out_path = os.path.join('results', f'results_{i}.pkl')
+        out_path = os.path.join('rollout', f'results_{i}.pkl')
         with open(out_path, 'wb') as f:
             pickle.dump([result, coords], f)
         print(f"Saved rollout results of trajectory {i} to {out_path}")
