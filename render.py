@@ -12,7 +12,7 @@ where result == [predicteds, targets]
   - targets:    shape (T, N, vel_dim)
 and crds: (N, 2) or (N, D) with at least first two columns = x,y coordinates.
 
-Produces an mp4 file for each pkl in --results-dir (default: results).
+Produces an mp4 file for each pkl in --out-dir (default: videos).
 """
 import os
 import argparse
@@ -166,8 +166,8 @@ def render_file(pkl_path, out_dir, fps=20, size=(1700, 800), skip=1,
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--results-dir', type=str, default='results/', required=True,
-                   help='Directory containing result .pkl files (e.g. results/)')
+    p.add_argument('--results-dir', type=str, default='rollout/', required=True,
+                   help='Directory containing result .pkl files (e.g. rollout/)')
     p.add_argument('--out-dir', type=str, default='videos', help='Output directory for videos')
     p.add_argument('--fps', type=int, default=20)
     p.add_argument('--size', nargs=2, type=int, default=[1700, 800], help='Output video size: width height (pixels)')
