@@ -41,7 +41,7 @@ def rollout_error(predicteds, targets):
 
 
 @torch.no_grad()
-def rollout_one_trajectory(model, dataset, traj_index, device='cpu', max_steps=None, enforce_mask=True):
+def rollout_one_trajectory(model, dataset, traj_index, device='cpu', max_steps=None, enforce_mask=True, return_connectivity=False):
     """
     Iterate sequentially through frames of trajectory traj_index from the IndexedTrajectoryDataset.
     Args:
@@ -51,6 +51,7 @@ def rollout_one_trajectory(model, dataset, traj_index, device='cpu', max_steps=N
       device: torch device to use
       max_steps: if not None, limit to this many steps (for validation)
       enforce_mask: if True, enforce boundary conditions by copying ground-truth velocity for boundary nodes
+      return_connectivity: if True, also return edge_index and edge_attr from last iter (for visualization)
     Returns:
       result = [predicteds_array, targets_array], crds
       predicteds_array.shape = (T, N, vel_dim), targets_array same
@@ -121,6 +122,11 @@ def rollout_one_trajectory(model, dataset, traj_index, device='cpu', max_steps=N
 
     predicteds = np.stack(predicteds)  # shape (T, N, vel_dim)
     targets = np.stack(targets)
+
+    if return_connectivity:
+        # pack coords with triangles if available (PyG face is (3,F) -> transpose to (F,3))
+        crds = (crds, graph.face.detach().cpu().numpy().T) if hasattr(graph, 'face') and graph.face is not None else crds
+
     return [predicteds, targets], crds
 
 
@@ -167,7 +173,7 @@ def main():
     n_trajs = min(args.rollout_num, len(dataset.traj_keys))
     for i in range(n_trajs):
         print(f"Starting rollout on trajectory {i} (key={dataset.traj_keys[i]})")
-        result, coords = rollout_one_trajectory(simulator, dataset, traj_index=i, device=device)
+        result, coords = rollout_one_trajectory(simulator, dataset, traj_index=i, device=device, return_connectivity=True)
         predicteds, targets = result
 
         # save results
