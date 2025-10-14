@@ -229,7 +229,7 @@ class EulerPeriodicDataset(Dataset):
                     dx_raw = float(pb[0] - pa[0])
                     dy_raw = float(pb[1] - pa[1])
 
-                    # modular reduction only when that axis is periodic
+                    # modular reduction to [-L/2, L/2] if periodic
                     if x_periodic:
                         dx = ((dx_raw + 0.5 * Lx) % Lx) - 0.5 * Lx
                     else:
