@@ -18,6 +18,7 @@ class EulerPeriodicDataset(Dataset):
         stats_path=None,
         time_window=1,
         patch_size=None,         # (h, w) or None for full grid
+        patch_stride=None,       # stride between patch origins (None -> equals patch_size)
         normalize=True,
         target="delta"           # "delta" or "absolute"
     ):
@@ -37,7 +38,18 @@ class EulerPeriodicDataset(Dataset):
         if self.time_window < 1:
             raise ValueError("time_window must be >= 1")
 
+        # patch configuration (None => full-grid behavior)
         self.patch_size = None if patch_size is None else tuple(patch_size)
+        # patch_stride: None means stride == patch_size (non-overlapping)
+        self.patch_stride = patch_stride
+
+        # these will be populated only if patch_size is provided
+        self.patches_per_row = None
+        self.patches_per_col = None
+        self.patches_per_timestep = None
+        self.patch_stride_h = None
+        self.patch_stride_w = None
+
         self.normalize = bool(normalize)
         self.target = str(target)
         assert self.target in ("delta", "absolute")
@@ -101,14 +113,6 @@ class EulerPeriodicDataset(Dataset):
             self._static_cache["x_periodic"] = x_periodic
             self._static_cache["y_periodic"] = y_periodic
 
-        # number of usable start times per simulation (need t+time_window for target)
-        self.n_per_sim = max(0, self.n_t - self.time_window)
-        if self.n_per_sim == 0:
-            raise RuntimeError("time_window too large for available timesteps")
-
-        # total samples across all simulations (flat index space)
-        self.total_samples = int(self.n_sims * self.n_per_sim)
-
         if self.patch_size is None:
             # full-grid training will be heavy, warn user
             print(f"EulerPeriodicDataset: using full-grid samples ({self.H}x{self.W}) — this is large ({self.H*self.W} nodes). Consider patching.")
@@ -116,6 +120,21 @@ class EulerPeriodicDataset(Dataset):
             ph, pw = self.patch_size
             if ph > self.H or pw > self.W:
                 raise ValueError(f"patch_size {self.patch_size} larger than grid {self.H, self.W}")
+
+        # number of usable start times per simulation (need t+time_window for target)
+        self.n_per_sim = max(0, self.n_t - self.time_window)
+        if self.n_per_sim == 0:
+            raise RuntimeError("time_window too large for available timesteps")
+
+        # if patching is requested, compute patch counts and update total_samples
+        if self.patch_size is not None:
+            # compute patches per sim and stride (populates self.patches_per_*)
+            self._compute_patch_grid()
+            # total samples across all simulations, timesteps and patch locations
+            self.total_samples = int(self.n_sims * self.n_per_sim * self.patches_per_timestep)
+        else:
+            # default full-grid sample count
+            self.total_samples = int(self.n_sims * self.n_per_sim)
 
         # ensure file closes on process exit
         atexit.register(self.close)
@@ -145,6 +164,91 @@ class EulerPeriodicDataset(Dataset):
             except Exception:
                 pass
         self._h5 = None
+
+    def _compute_patch_grid(self):
+        """
+        Compute patch parameters based on self.patch_size and self.patch_stride.
+        Populates and returns (patches_per_row, patches_per_col, patches_per_timestep,
+                              patch_stride_h, patch_stride_w).
+        Requires that self.patch_size is not None.
+        """
+        if self.patch_size is None:
+            raise ValueError("_compute_patch_grid called but self.patch_size is None")
+
+        # unify patch_size
+        if isinstance(self.patch_size, int):
+            ph = pw = int(self.patch_size)
+        else:
+            ph, pw = map(int, self.patch_size)
+
+        # stride default -> non-overlapping
+        if self.patch_stride is None:
+            sh, sw = ph, pw
+        elif isinstance(self.patch_stride, int):
+            sh = sw = int(self.patch_stride)
+        else:
+            sh, sw = map(int, self.patch_stride)
+
+        # compute number of patches that fit (sliding-window)
+        patches_per_col = ((self.H - ph) // sh) + 1
+        patches_per_row = ((self.W - pw) // sw) + 1
+        patches_per_timestep = patches_per_row * patches_per_col
+
+        # store into self for reuse
+        self.patches_per_row = int(patches_per_row)
+        self.patches_per_col = int(patches_per_col)
+        self.patches_per_timestep = int(patches_per_timestep)
+        self.patch_stride_h = int(sh)
+        self.patch_stride_w = int(sw)
+
+        return (self.patches_per_row, self.patches_per_col,
+                self.patches_per_timestep, self.patch_stride_h, self.patch_stride_w)
+
+    def _decode_index(self, idx):
+        """
+        Convert a flat index idx into (sim_idx, t_idx, i0, j0).
+        - If patching is not active (self.patch_size is None), returns (sim_idx, t_idx, None, None).
+        - If patching is active, returns the patch origin (i0,j0) for the given idx.
+        Assumes idx in [0, len(self)-1].
+
+        Example:
+        H=W=512, p=64, stride=64, patches_per_row=8, patches_per_col=8, patches_per_timestep=64, n_per_sim=100, n_sims=400:
+            per_sim = 100 * 64 = 6400.
+            idx = 0 -> sim_idx = 0, rem=0 -> t_idx=0, patch_id=0 -> row=0,col=0 -> i0=0, j0=0
+            idx = 1 -> sim 0, t 0, patch_id 1 -> row 0, col 1 -> i0=0, j0=64
+            idx = 64 -> sim 0, t 1, patch_id 0 -> sim=0, t=1, i0=0, j0=0
+            idx = per_sim -> sim_idx =1, rem=0 -> sim 1, t 0, patch_id 0.
+        """
+        idx = int(idx)
+        if idx < 0:
+            raise IndexError("Negative index not supported")
+
+        if self.patch_size is None:
+            # idx -> (sim_idx, t_idx) via divmod with n_per_sim
+            sim_idx, t_idx = divmod(idx, self.n_per_sim)
+            return int(sim_idx), int(t_idx), None, None
+
+        # for sim in sims: for t in 0..n_per_sim-1: for each patch origin...
+        per_sim = int(self.n_per_sim * self.patches_per_timestep)
+        sim_idx = idx // per_sim
+        rem = idx % per_sim
+        t_idx = rem // self.patches_per_timestep
+        patch_id = rem % self.patches_per_timestep
+
+        # decode patch_id to (row, col)
+        row = patch_id // self.patches_per_row
+        col = patch_id % self.patches_per_row
+
+        i0 = int(row * self.patch_stride_h)
+        j0 = int(col * self.patch_stride_w)
+
+        # sanity checks
+        if sim_idx < 0 or sim_idx >= self.n_sims:
+            raise IndexError(f"sim_idx out of range: {sim_idx}")
+        if t_idx < 0 or t_idx >= self.n_per_sim:
+            raise IndexError(f"t_idx out of range: {t_idx}")
+
+        return int(sim_idx), int(t_idx), int(i0), int(j0)
 
     def _build_full_grid_edges(self):
         """
@@ -348,9 +452,9 @@ class EulerPeriodicDataset(Dataset):
         gamma_val = self._static_cache.get("gamma", None)
         if gamma_val is not None:
             global_feat.append(torch.tensor([float(gamma_val)], dtype=torch.float))
-
         if time_step is not None:
             global_feat.append(torch.tensor([float(time_step)], dtype=torch.float))
+
         if global_feat:
             global_feat = torch.cat(global_feat).unsqueeze(0)  # shape (1, # global features)
         else:
@@ -381,9 +485,6 @@ class EulerPeriodicDataset(Dataset):
                 "y_pressure": target pressure array of shape (H, W)
                 "y_momentum": target momentum array of shape (H, W, 2)
         """
-        self._ensure_h5()
-        f = self._h5
-
         # map global flat index to simulation and starting timestep
         sim_idx, t_idx = divmod(idx, self.n_per_sim)
 
@@ -431,5 +532,7 @@ class EulerPeriodicDataset(Dataset):
     def __len__(self):
         """
         Return the number of samples (flat index space).
+        If patch_size was provided, this is n_sims * n_per_sim * patches_per_timestep.
+        Otherwise the original full-grid total_samples (n_sims * n_per_sim).
         """
         return int(self.total_samples)
