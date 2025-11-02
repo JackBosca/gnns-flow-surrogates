@@ -115,7 +115,7 @@ class EulerPeriodicDataset(Dataset):
 
         if self.patch_size is None:
             # full-grid training will be heavy, warn user
-            print(f"EulerPeriodicDataset: using full-grid samples ({self.H}x{self.W}) — this is large ({self.H*self.W} nodes). Consider patching.")
+            print(f"EulerPeriodicDataset: using full-grid samples ({self.H}x{self.W}), this is large ({self.H*self.W} nodes). Consider patching.")
         else:
             ph, pw = self.patch_size
             if ph > self.H or pw > self.W:
@@ -250,43 +250,53 @@ class EulerPeriodicDataset(Dataset):
 
         return int(sim_idx), int(t_idx), int(i0), int(j0)
 
-    def _build_full_grid_edges(self):
+    def _build_grid_edges(self, H, W, pos_grid, x_periodic=False, y_periodic=False, cache_key=None):
         """
-        Build and cache full-grid 4-neighbor directed edges and edge attributes
-        for the entire (H x W) grid, respecting periodic wrap as indicated by masks.
-        Caches outputs so it's built only once.
+        Edge builder for an HxW grid given pos_grid (H,W,2), respecting periodic wrap as indicated by masks.
+        If cache_key is provided and present in self._static_cache, return cached tensors.
         Returns:
             edge_index: torch.LongTensor of shape (2, E)
             edge_attr:  torch.FloatTensor of shape (E, 4) containing [dx, dy, r, wrap_flag]
-                        where wrap_flag is 1.0 if the edge is a wrap-around edge (crosses seam).
+                        where wrap_flag is 1.0 if the edge is a wrap-around edge.
         """
-        cache_key_idx = "edge_index_full"
-        cache_key_attr = "edge_attr_full"
-        if cache_key_idx in self._static_cache and cache_key_attr in self._static_cache:
-            return self._static_cache[cache_key_idx], self._static_cache[cache_key_attr]
+        # check cache: because every simulation and timestep shares the same uniform 512×512 grid layout, 
+        # a patch of size pxp always has the same local topology and neighbor connectivity
+        # --> can reuse them for all timesteps and all simulations (same for full grid)
+        if cache_key is not None and cache_key in self._static_cache:
+            return self._static_cache[cache_key]["edge_index"], self._static_cache[cache_key]["edge_attr"]
 
-        # get dimensions
-        H, W = int(self.H), int(self.W)
-
-        # retrieve pos template as (H, W, 2)
-        pos_template = self._static_cache.get("pos_template", None)
-        pos_grid = pos_template.reshape(H, W, 2)  # pos_grid[i,j] = (x_j, y_i)
-
-        # periodic flags
-        x_periodic = bool(self._static_cache.get("x_periodic", False))
-        y_periodic = bool(self._static_cache.get("y_periodic", False))
-
-        # get x and y coordinate arrays and then actual domain extensions
-        x_coords = self._static_cache.get("x_coords", None)
-        y_coords = self._static_cache.get("y_coords", None)
-        if x_coords is not None:
-            Lx = float(x_coords.max() - x_coords.min())
+        # normalize pos_grid to a numpy array shaped (H, W, 2)
+        if isinstance(pos_grid, torch.Tensor):
+            pos_np = pos_grid.cpu().numpy()
         else:
-            Lx = 1.0    # see: https://polymathic-ai.org/the_well/datasets/euler_multi_quadrants_periodicBC/
-        if y_coords is not None:
-            Ly = float(y_coords.max() - y_coords.min())
+            pos_np = np.asarray(pos_grid, dtype=np.float32)
+
+        # accept flattened (N,2) or (H,W,2)
+        if pos_np.ndim == 2 and pos_np.shape[1] == 2:
+            pos_np = pos_np.reshape(H, W, 2)
+        elif pos_np.ndim == 3:
+            # check shape matches
+            if pos_np.shape[0] != H or pos_np.shape[1] != W or pos_np.shape[2] != 2:
+                raise ValueError(f"pos_grid shape {pos_np.shape} incompatible with H={H}, W={W}")
         else:
-            Ly = 1.0    # see: https://polymathic-ai.org/the_well/datasets/euler_multi_quadrants_periodicBC/
+            raise ValueError(f"pos_grid must be (H,W,2) or (N,2); got shape {pos_np.shape}")
+
+        # domain extents for modular arithmetic (for handling periodic)
+        x_flat = pos_np[..., 0].ravel() # selects the first element of the last dimension for every other dimension
+        y_flat = pos_np[..., 1].ravel()
+
+        # --------------------------------- fixing some problems with my numpy package
+        try:
+            # numpy road
+            Lx = float(x_flat.max() - x_flat.min()) if x_flat.size > 0 else 1.0
+            Ly = float(y_flat.max() - y_flat.min()) if y_flat.size > 0 else 1.0
+        except Exception:
+            # fallback with lists
+            x_list = list(x_flat.tolist())
+            y_list = list(y_flat.tolist())
+            Lx = float(max(x_list) - min(x_list)) if len(x_list) > 0 else 1.0
+            Ly = float(max(y_list) - min(y_list)) if len(y_list) > 0 else 1.0
+        # ---------------------------------
 
         src_list = []
         dst_list = []
@@ -299,7 +309,7 @@ class EulerPeriodicDataset(Dataset):
         for i in range(H):
             for j in range(W):
                 a_id = i * W + j    # flattened index of node a (source)
-                pa = pos_grid[i, j]  # [x_a, y_a]
+                pa = pos_np[i, j]   # [x_a, y_a]
 
                 for di, dj in nbrs:
                     # compute candidate neighbor indices
@@ -314,7 +324,7 @@ class EulerPeriodicDataset(Dataset):
                             ni = ni % H
                             wrapped = True
                         else:
-                            continue  # skip neighbor outside domain for non-periodic
+                            continue    # skip neighbor outside domain for non-periodic
 
                     # handle x-axis (horizontal) overflow
                     if nj < 0 or nj >= W:
@@ -327,26 +337,25 @@ class EulerPeriodicDataset(Dataset):
 
                     # compute flattened index of valid neighbor node b (destination)
                     b_id = ni * W + nj
-                    pb = pos_grid[ni, nj]  # [x_b, y_b]
+                    pb = pos_np[ni, nj] # [x_b, y_b]
 
                     # compute distance components
                     dx_raw = float(pb[0] - pa[0])
                     dy_raw = float(pb[1] - pa[1])
 
                     # modular reduction to [-L/2, L/2] if periodic
-                    if x_periodic:
+                    if x_periodic and Lx > 0:
                         dx = ((dx_raw + 0.5 * Lx) % Lx) - 0.5 * Lx
                     else:
                         dx = dx_raw
 
-                    if y_periodic:
+                    if y_periodic and Ly > 0:
                         dy = ((dy_raw + 0.5 * Ly) % Ly) - 0.5 * Ly
                     else:
                         dy = dy_raw
 
                     # Euclidean distance
                     r = (dx * dx + dy * dy) ** 0.5
-
                     # wrap flag: 1.0 if wrapped on either axis else 0.0
                     wrap_flag = 1.0 if wrapped else 0.0
 
@@ -358,17 +367,43 @@ class EulerPeriodicDataset(Dataset):
         edge_index = torch.tensor([src_list, dst_list], dtype=torch.long) # shape (2, E)
         edge_attr = torch.tensor(attr_list, dtype=torch.float32) # shape (E, 4)
 
-        self._static_cache[cache_key_idx] = edge_index
-        self._static_cache[cache_key_attr] = edge_attr
+        if cache_key is not None:
+            # store as a dict
+            self._static_cache[cache_key] = {"edge_index": edge_index, "edge_attr": edge_attr}
 
         return edge_index, edge_attr
+
+    def _build_full_grid_edges(self):
+        """
+        Returns cached full-grid edges or builds them by calling _build_grid_edges() on full grid.
+        Returns:
+            edge_index: torch.LongTensor of shape (2, E)
+            edge_attr:  torch.FloatTensor of shape (E, 4) containing [dx, dy, r, wrap_flag]
+                        where wrap_flag is 1.0 if the edge is a wrap-around edge.
+        """
+        x_periodic = self._static_cache.get("x_periodic", False)
+        y_periodic = self._static_cache.get("y_periodic", False)
+
+        # create cache key for full grid edges
+        cache_key = f"edge_full_{self.H}_{self.W}_{int(x_periodic)}_{int(y_periodic)}"
+        # retrieve global pos template as (H, W, 2)
+        pos_template = self._static_cache.get("pos_template", None)
+        pos_grid = pos_template.reshape(self.H, self.W, 2)  # pos_grid[i,j] = (x_j, y_i)
+
+        return self._build_grid_edges(self.H, self.W, pos_grid,
+                                      x_periodic=x_periodic,
+                                      y_periodic=y_periodic,
+                                      cache_key=cache_key)
     
-    def _load_time_window(self, sim_idx, t_idx):
+    def _load_time_window(self, sim_idx, t_idx, i0=None, j0=None, p_h=None, p_w=None):
         """
         Load scalar and vector fields for a given simulation and starting timestep.
+        If p_h/p_w are provided, loads a node patch starting at (i0, j0) of shape (p_h, p_w).
         Args:
             sim_idx: int, simulation index (0 .. n_sims-1)
             t_idx: int, starting timestep index (0 .. n_t - time_window - 1)
+            i0, j0: int or None, patch origin (row, col) if patching is used
+            p_h, p_w: int or None, patch height and width if patching is used
         Returns:
             dict with keys "density", "energy", "pressure", "momentum"
             Each value is a numpy array with shape:
@@ -380,30 +415,61 @@ class EulerPeriodicDataset(Dataset):
         f = self._h5
 
         t_w = self.time_window
-        H, W = self.H, self.W
 
-        # preallocate arrays
-        density = np.empty((t_w, H, W), dtype=np.float32)
-        energy  = np.empty((t_w, H, W), dtype=np.float32)
-        pressure= np.empty((t_w, H, W), dtype=np.float32)
-        momentum= np.empty((t_w, H, W, 2), dtype=np.float32)
+        # decide whether to read full grid or patch
+        if p_h is None or p_w is None:
+            H, W = self.H, self.W
 
-        d_density = f["t0_fields"]["density"]
-        d_energy  = f["t0_fields"]["energy"]
-        d_pressure= f["t0_fields"]["pressure"]
-        d_mom     = f["t1_fields"]["momentum"]
+            # preallocate arrays
+            density = np.empty((t_w, H, W), dtype=np.float32)
+            energy  = np.empty((t_w, H, W), dtype=np.float32)
+            pressure= np.empty((t_w, H, W), dtype=np.float32)
+            momentum= np.empty((t_w, H, W, 2), dtype=np.float32)
 
-        # read each timestep with read_direct
-        for i in range(t_w):
-            # slice for scalar fields: (sim_idx, t_idx+i, :, :)
-            src_sel_scalar = np.s_[sim_idx, t_idx+i, :, :]
-            d_density.read_direct(density[i], source_sel=src_sel_scalar)
-            d_energy.read_direct(energy[i], source_sel=src_sel_scalar)
-            d_pressure.read_direct(pressure[i], source_sel=src_sel_scalar)
+            d_density = f["t0_fields"]["density"]
+            d_energy  = f["t0_fields"]["energy"]
+            d_pressure= f["t0_fields"]["pressure"]
+            d_mom     = f["t1_fields"]["momentum"]
 
-            # slice for vector field: (sim_idx, t_idx+i, :, :, :)
-            src_sel_vector = np.s_[sim_idx, t_idx+i, :, :, :]
-            d_mom.read_direct(momentum[i], source_sel=src_sel_vector)
+            # read each timestep with read_direct
+            for i in range(t_w):
+                # slice for scalar fields: (sim_idx, t_idx+i, :, :)
+                src_sel_scalar = np.s_[sim_idx, t_idx+i, :, :]
+                d_density.read_direct(density[i], source_sel=src_sel_scalar)
+                d_energy.read_direct(energy[i], source_sel=src_sel_scalar)
+                d_pressure.read_direct(pressure[i], source_sel=src_sel_scalar)
+
+                # slice for vector field: (sim_idx, t_idx+i, :, :, :)
+                src_sel_vector = np.s_[sim_idx, t_idx+i, :, :, :]
+                d_mom.read_direct(momentum[i], source_sel=src_sel_vector)
+
+        else:
+            # patch read
+            if i0 is None or j0 is None:
+                raise ValueError("i0,j0 must be provided when p_h,p_w are specified")
+
+            H_patch = int(p_h)
+            W_patch = int(p_w)
+
+            density = np.empty((t_w, H_patch, W_patch), dtype=np.float32)
+            energy  = np.empty((t_w, H_patch, W_patch), dtype=np.float32)
+            pressure= np.empty((t_w, H_patch, W_patch), dtype=np.float32)
+            momentum= np.empty((t_w, H_patch, W_patch, 2), dtype=np.float32)
+
+            d_density = f["t0_fields"]["density"]
+            d_energy  = f["t0_fields"]["energy"]
+            d_pressure= f["t0_fields"]["pressure"]
+            d_mom     = f["t1_fields"]["momentum"]
+
+            # slices: sim_idx, t_idx+i, i0:i0+H_patch, j0:j0+W_patch
+            for i in range(t_w):
+                src_sel_scalar = np.s_[sim_idx, t_idx+i, i0:i0+H_patch, j0:j0+W_patch]
+                d_density.read_direct(density[i], source_sel=src_sel_scalar)
+                d_energy.read_direct(energy[i], source_sel=src_sel_scalar)
+                d_pressure.read_direct(pressure[i], source_sel=src_sel_scalar)
+
+                src_sel_vector = np.s_[sim_idx, t_idx+i, i0:i0+H_patch, j0:j0+W_patch, :]
+                d_mom.read_direct(momentum[i], source_sel=src_sel_vector)
 
         return {
             "density": density,
@@ -413,7 +479,10 @@ class EulerPeriodicDataset(Dataset):
         }
 
     def _arrays_to_graph(self, x, y_density, y_energy, y_pressure, y_momentum,
-                        time_step=None):
+                        time_step=None,
+                        pos_template_override=None,
+                        edge_index_override=None,
+                        edge_attr_override=None):
         """
         Convert arrays to a PyG Data object.
         Args:
@@ -421,6 +490,9 @@ class EulerPeriodicDataset(Dataset):
             y_density, y_energy, y_pressure: np.ndarray of shape (H, W) - scalar targets
             y_momentum: np.ndarray of shape (H, W, 2) - vector target
             time_step: int or None - current timestep (optional global feature)
+            pos_template_override: np.ndarray of shape (H, W, 2) or None - override for node positions
+            edge_index_override: torch.LongTensor of shape (2, E) or None - override for edge_index
+            edge_attr_override: torch.FloatTensor of shape (E, 4) or None - override for edge_attr
         Returns:
             Data: PyG Data object with x, pos, edge_index (if desired), y, and optional globals.
         """
@@ -430,14 +502,22 @@ class EulerPeriodicDataset(Dataset):
         # flatten node features
         x_nodes = torch.tensor(x.reshape(C_in, N).T, dtype=torch.float)  # shape (N, C_in)
 
-        # use cached pos if available
-        pos_template = self._static_cache.get("pos_template", None)
-        if pos_template is not None:
-            # pos is numpy array (N,2) -> convert to torch
+        if pos_template_override is not None:
+            # accepts numpy array (H, W, 2)
+            pos_arr = pos_template_override.reshape(N, 2)
+            pos = torch.as_tensor(pos_arr, dtype=torch.float)
+        else:
+            # use cached pos
+            pos_template = self._static_cache.get("pos_template", None)
+            # pos_template is numpy array (N,2) -> convert to torch
             pos = torch.as_tensor(pos_template, dtype=torch.float)
 
-        # attach precomputed full-grid 4-neighbour edges and attributes
-        edge_index, edge_attr = self._build_full_grid_edges()
+        if edge_index_override is not None and edge_attr_override is not None:
+            edge_index = edge_index_override
+            edge_attr = edge_attr_override
+        else:
+            # attach precomputed full-grid 4-neighbour edges and attributes
+            edge_index, edge_attr = self._build_full_grid_edges()
 
         # flatten targets and turn into tensors
         y_density = torch.tensor(y_density.reshape(N), dtype=torch.float)
@@ -475,6 +555,7 @@ class EulerPeriodicDataset(Dataset):
     def __getitem__(self, idx):
         """
         Return a sample from the Euler periodic dataset.
+        If self.patch_size is set, returns a patch-graph, otherwise returns the full-grid graph.
         Args:
             idx: int, flat index in range [0, len(self)-1]
         Returns:
@@ -485,16 +566,28 @@ class EulerPeriodicDataset(Dataset):
                 "y_pressure": target pressure array of shape (H, W)
                 "y_momentum": target momentum array of shape (H, W, 2)
         """
-        # map global flat index to simulation and starting timestep
-        sim_idx, t_idx = divmod(idx, self.n_per_sim)
+        # decode index into sim, t and optional patch origin
+        sim_idx, t_idx, i0, j0 = self._decode_index(idx)
 
-        # load time window of data
-        data = self._load_time_window(sim_idx, t_idx)
-        density  = data["density"]   # shape: (time_window, H, W)
-        energy   = data["energy"]    # shape: (time_window, H, W)
-        pressure = data["pressure"]  # shape: (time_window, H, W)
-        momentum = data["momentum"]  # shape: (time_window, H, W, 2)
-
+        # load time window of data (full grid or patch depending on patch_size)
+        if self.patch_size is None:
+            # full-grid read
+            data = self._load_time_window(sim_idx, t_idx)
+            density  = data["density"]   # shape: (time_window, H, W)
+            energy   = data["energy"]    # shape: (time_window, H, W)
+            pressure = data["pressure"]  # shape: (time_window, H, W)
+            momentum = data["momentum"]  # shape: (time_window, H, W, 2)
+            H_use, W_use = self.H, self.W
+        else:
+            # patch read: read p_h x p_w node patch starting at (i0, j0)
+            p_h, p_w = self.patch_size
+            data = self._load_time_window(sim_idx, t_idx, i0=i0, j0=j0, p_h=p_h, p_w=p_w)
+            density  = data["density"]   # (time_window, p_h, p_w)
+            energy   = data["energy"]    # (time_window, p_h, p_w)
+            pressure = data["pressure"]  # (time_window, p_h, p_w)
+            momentum = data["momentum"]  # (time_window, p_h, p_w, 2)
+            H_use, W_use = int(p_h), int(p_w)
+        
         # optionally normalize
         if self.normalize and self.stats is not None:
             density  = (density  - self.stats["mean"]["density"])  / self.stats["std"]["density"]
@@ -515,16 +608,47 @@ class EulerPeriodicDataset(Dataset):
             y_pressure = pressure[-1]
             y_momentum = momentum[-1]
 
-        # reshape momentum to (time_window, 2, H, W) and flatten into (time_window*2, H, W) for concatenation
-        mom_ch = momentum.transpose(0, 3, 1, 2).reshape(self.time_window * 2, self.H, self.W)
-        x = np.concatenate([density, energy, pressure, mom_ch], axis=0)  # shape: (C_in=time_window*5, H, W)
+        # reshape momentum to (time_window, 2, H, W) and flatten into (time_window*2, H_use, W_use) for concatenation
+        mom_ch = momentum.transpose(0, 3, 1, 2).reshape(self.time_window * 2, H_use, W_use)
+        x = np.concatenate([density, energy, pressure, mom_ch], axis=0)  # shape: (C_in=time_window*5, H_use, W_use)
 
         # last input timestep to be attached as a global feature
         last_input_t = t_idx + self.time_window - 1 # if time_window=1, last_input_t = t_idx
         time_scalar = float(last_input_t) / float(self.n_t - 1)   # normalization to [0,1]
 
-        # build graph Data
-        data = self._arrays_to_graph(x, y_density, y_energy, y_pressure, y_momentum,
+        # build graph Data: if patching, build per-patch pos_template and edges 
+        # and pass them to _arrays_to_graph
+        if self.patch_size is not None:
+            # construct pos_template for the patch using global coord arrays
+            x_coords = self._static_cache.get("x_coords", None)
+            y_coords = self._static_cache.get("y_coords", None)
+
+            # extract coordinate slices for the patch (no wrapping needed due to tiling logic:
+            # j0+W_use <= W and i0+H_use <= H)
+            j0 = int(j0)
+            i0 = int(i0)
+            x_patch = x_coords[j0:j0+W_use]
+            y_patch = y_coords[i0:i0+H_use]
+            Xp, Yp = np.meshgrid(x_patch, y_patch, indexing="xy")   # (H_use, W_use)
+            pos_template_patch = np.stack([Xp, Yp], axis=-1).astype(np.float32)  # (H_use, W_use, 2)
+
+            # build per-patch edges and attributes
+            x_periodic = bool(self._static_cache.get("x_periodic", False))
+            y_periodic = bool(self._static_cache.get("y_periodic", False))
+            edge_cache_key = f"edge_patch_{H_use}_{W_use}_{int(x_periodic)}_{int(y_periodic)}"
+            edge_index_patch, edge_attr_patch = self._build_grid_edges(H_use, W_use, pos_template_patch,
+                                                                    x_periodic=x_periodic, y_periodic=y_periodic,
+                                                                    cache_key=edge_cache_key)
+
+            # call arrays_to_graph with overrides
+            data = self._arrays_to_graph(x, y_density, y_energy, y_pressure, y_momentum,
+                                         time_step=time_scalar,
+                                         pos_template_override=pos_template_patch,
+                                         edge_index_override=edge_index_patch,
+                                         edge_attr_override=edge_attr_patch)
+        else:
+            # full-grid case (_build_full_grid_edges used internally)
+            data = self._arrays_to_graph(x, y_density, y_energy, y_pressure, y_momentum,
                                     time_step=time_scalar)
 
         return data
