@@ -413,7 +413,6 @@ class EulerPeriodicDataset(Dataset):
                 "y_momentum": target momentum array of shape (H, W, 2)
         """
         self._ensure_h5()
-        f = self._h5
 
         # map global flat index to simulation and starting timestep
         sim_idx, t_idx = divmod(idx, self.n_per_sim)
