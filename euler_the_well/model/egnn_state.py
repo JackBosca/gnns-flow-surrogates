@@ -5,16 +5,12 @@ from egnn_pytorch import EGNN_Sparse_Network
 class EGNNStateModel(nn.Module):
     """
     Wrapper around EGNN_Sparse_Network to predict (density, energy, pressure, momentum_x, momentum_y)
-    per node.
+    (or delta values) per node.
     Notes:
-    - dataset provides node features of shape (C_in, Hc, Wc) flattened -> N nodes.
-      C_in (input_feat_dim) is currently time_window * 5.
-    - dataset may provide global features `u` with shape (1, G) (or None).
-      Concatenate these G scalar(s) to every node feature before feeding the EGNN.
+    - global feats are concatenated to node features if provided, resulting in (C_in + G) per node.
     - EGNN_Sparse_Network expects input `x` with shape (N, pos_dim + feats_dim).
-      Here feats_dim is (input_feat_dim + global_feat_dim).
     - The final readout head maps per-node features (excluding coordinates) to 5 outputs:
-      [density, energy, pressure, momentum_x, momentum_y].
+      density, energy, pressure, momentum_x, momentum_y.
     """
     def __init__(
         self,
@@ -43,7 +39,7 @@ class EGNNStateModel(nn.Module):
         # combined node feature dimension that EGNN will see (excluding pos_dim)
         self.node_feat_dim = self.input_feat_dim + self.global_feat_dim
 
-        # build EGNN sparse network.
+        # build EGNN sparse network
         self.egnn = EGNN_Sparse_Network(
             n_layers = n_layers,
             feats_dim = self.node_feat_dim, # input node feature dimension
@@ -102,8 +98,6 @@ class EGNNStateModel(nn.Module):
         else:
             self.readout.apply(self._init_linear)
         
-        # convenience attributes for downstream code / loss configuration
-        self.output_keys = ["density", "energy", "pressure", "momentum_x", "momentum_y"]
         self.use_separate_heads = bool(use_separate_heads)
 
     def _init_linear(self, m):
@@ -145,7 +139,6 @@ class EGNNStateModel(nn.Module):
             dict with keys "density", "energy", "pressure", "momentum", "feats"
             where density/energy/pressure are (N,), momentum is (N,2), feats is (N, node_feat_dim).
         """
-        # grab tensors
         x_nodes = data.x            # (N, C_in)
         pos = data.pos              # (N, pos_dim)
         edge_index = data.edge_index
