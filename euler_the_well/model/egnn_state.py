@@ -158,6 +158,8 @@ class EGNNStateModel(nn.Module):
 
         # build EGNN input, concat pos and node_feats
         pos = pos.to(device)
+        batch = batch.to(device)
+        node_feats = node_feats.to(device)
         x_input = torch.cat([pos, node_feats], dim=-1)  # shape (N, pos_dim + node_feat_dim)
 
         # EGNN returns (N, pos_dim + feats_dim_out)
