@@ -16,7 +16,7 @@ class EulerPeriodicDataset(Dataset):
         self,
         h5_path,
         stats_path=None,
-        time_window=1,
+        time_window=2,
         patch_size=None,         # (h, w) or None for full grid
         patch_stride=None,       # stride between patch origins (None -> equals patch_size)
         normalize=True,
@@ -37,6 +37,8 @@ class EulerPeriodicDataset(Dataset):
         self.time_window = int(time_window)
         if self.time_window < 1:
             raise ValueError("time_window must be >= 1")
+        if self.time_window == 1 and target == "delta":
+            print("Warning: time_window=1 with target='delta' means target is always zero.")
 
         # patch configuration (None => full-grid behavior)
         self.patch_size = None if patch_size is None else tuple(patch_size)

@@ -16,7 +16,7 @@ class EulerPeriodicDataset(Dataset):
         self,
         h5_path,
         stats_path=None,
-        time_window=1,
+        time_window=2,
         normalize=True,
         target="delta",          # "delta" or "absolute"
         coarsen=(1, 1)           # (sh, sw) stride: (rows, cols)
