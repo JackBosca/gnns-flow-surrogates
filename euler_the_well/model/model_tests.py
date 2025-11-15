@@ -6,7 +6,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.76_Ar_-180.hdf5"
 stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
-dataset = EulerPeriodicDataset(h5_path, stats_path=stats_path, time_window=1, normalize=True, coarsen=(1,1))
+dataset = EulerPeriodicDataset(h5_path, stats_path=stats_path, time_window=2, target='delta', normalize=True, coarsen=(1,1))
 
 sample = dataset[0]  # torch_geometric.data.Data
 input_node_feats = sample.x.shape[1]        # time_window * 5
