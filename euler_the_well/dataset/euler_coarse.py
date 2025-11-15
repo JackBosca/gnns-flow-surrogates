@@ -36,6 +36,8 @@ class EulerPeriodicDataset(Dataset):
         self.time_window = int(time_window)
         if self.time_window < 1:
             raise ValueError("time_window must be >= 1")
+        if self.time_window == 1 and target == "delta":
+            print("Warning: time_window=1 with target='delta' means target is always zero.")
 
         self.normalize = bool(normalize)
         self.target = str(target)
