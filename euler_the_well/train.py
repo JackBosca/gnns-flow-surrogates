@@ -107,7 +107,7 @@ def train_one_epoch(model, dataloader, optimizer, device,
 
 
 def train(model, train_loader, val_loader=None, optimizer=None, criterion=None, 
-          device="cuda", epochs=10, save_dir="./checkpoints", save_every=1):
+          device="cuda", epochs=10, save_dir="./checkpoints", save_every=1, fname="model"):
     """
     Args:
         model: PyTorch model
@@ -145,7 +145,9 @@ def train(model, train_loader, val_loader=None, optimizer=None, criterion=None,
         
         # Save checkpoint
         if epoch % save_every == 0:
-            checkpoint_path = os.path.join(save_dir, f"model_epoch_{epoch}.pt")
+            # complete fname with epoch
+            fname_epoch = f"{fname}_epoch_{epoch}.pt"
+            checkpoint_path = os.path.join(save_dir, fname_epoch)
             torch.save(model.state_dict(), checkpoint_path)
             print(f"Saved checkpoint: {checkpoint_path}")
 
@@ -157,7 +159,8 @@ if __name__ == "__main__":
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     # create dataset and dataloader
-    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, stats_path=stats_path, coarsen=(2,2))
+    coarsen = (2,2)
+    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, stats_path=stats_path, coarsen=coarsen)
     valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, stats_path=stats_path)
 
     # print grid dimensions train
@@ -177,7 +180,9 @@ if __name__ == "__main__":
     # use AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
+    fname = f"model_coarsen_{coarsen[0]}-{coarsen[1]}"
+
     # train the model
-    train(model, train_loader, optimizer=optimizer)
+    train(model, train_loader, optimizer=optimizer, fname=fname)
 
     print("Training complete.")
