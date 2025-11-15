@@ -80,6 +80,7 @@ def rollout_one_simulation(model, dataset, sim_idx, start_t=0, rollout_steps=Non
     timesteps = [start_t]
 
     rmse_density, rmse_energy, rmse_pressure, rmse_momentum_x, rmse_momentum_y = [], [], [], [], []
+    gt_density_list, gt_energy_list, gt_pressure_list, gt_momentum_list = [], [], [], []
 
     print(f"\nRolling out simulation {sim_idx} from t={start_t} for {rollout_steps} steps...\n")
 
@@ -112,6 +113,12 @@ def rollout_one_simulation(model, dataset, sim_idx, start_t=0, rollout_steps=Non
             gt["pressure"][0].astype(np.float32),
             gt["momentum"][0].astype(np.float32),
         )
+
+        # append ground truth
+        gt_density_list.append(gt_d.copy())
+        gt_energy_list.append(gt_e.copy())
+        gt_pressure_list.append(gt_p.copy())
+        gt_momentum_list.append(gt_m.copy())
 
         # denormalize prediction for RMSE comparison in physical units
         pred_d, pred_e, pred_p, pred_m = denormalize_fields(do_normalize=do_normalize, stats=stats, 
@@ -164,6 +171,13 @@ def rollout_one_simulation(model, dataset, sim_idx, start_t=0, rollout_steps=Non
                                                         d=out["density_norm"], e=out["energy_norm"],
                                                         p=out["pressure_norm"], m=out["momentum_norm"])
         out.update(density=den_d, energy=den_e, pressure=den_p, momentum=den_m)
+
+    out.update(
+        gt_density=np.stack(gt_density_list),
+        gt_energy=np.stack(gt_energy_list),
+        gt_pressure=np.stack(gt_pressure_list),
+        gt_momentum=np.stack(gt_momentum_list),
+    )
 
     if save_path:
         os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
