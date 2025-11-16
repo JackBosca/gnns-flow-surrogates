@@ -56,7 +56,6 @@ class EulerPeriodicDataset(Dataset):
         # dictionary to cache static data
         self._static_cache = {}
 
-        # retrieve number of simulations, timesteps, grid size from file
         with h5py.File(self.h5_path, "r") as f:
             # use density to get shapes
             d_density = f["t0_fields"]["density"]
@@ -88,7 +87,7 @@ class EulerPeriodicDataset(Dataset):
 
             # compute coarsened grid sizes, must be exact divisibile
             if (self.H % self.sh != 0) or (self.W % self.sw != 0):
-                raise ValueError(f"coarsen {self.sh,self.sw} must divide grid size {self.H,self.W}")
+                raise ValueError(f"coarsen {self.sh, self.sw} must divide grid size {self.H, self.W}")
 
             self.Hc = self.H // self.sh
             self.Wc = self.W // self.sw
@@ -131,7 +130,7 @@ class EulerPeriodicDataset(Dataset):
         self.n_per_sim = max(0, self.n_t - self.time_window)
         if self.n_per_sim == 0:
             raise RuntimeError("time_window too large for available timesteps")
-
+ 
         # total samples across all simulations (flat index space)
         self.total_samples = int(self.n_sims * self.n_per_sim)
 
@@ -384,6 +383,8 @@ class EulerPeriodicDataset(Dataset):
 
         if time_step is not None:
             global_feat.append(torch.tensor([float(time_step)], dtype=torch.float))
+        
+        # check if empty
         if global_feat:
             global_feat = torch.cat(global_feat).unsqueeze(0)  # shape (1, # global features)
         else:
