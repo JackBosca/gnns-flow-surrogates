@@ -124,7 +124,7 @@ class EulerPeriodicDataset(Dataset):
                 raise ValueError(f"patch_size {self.patch_size} larger than grid {self.H, self.W}")
 
         # number of usable start times per simulation (need t+time_window for target)
-        self.n_per_sim = max(0, self.n_t - self.time_window)
+        self.n_per_sim = max(0, self.n_t - self.time_window + 1)
         if self.n_per_sim == 0:
             raise RuntimeError("time_window too large for available timesteps")
 
