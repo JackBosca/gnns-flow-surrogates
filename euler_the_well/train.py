@@ -36,6 +36,8 @@ def train_one_epoch(model, dataloader, optimizer, device,
     total_mse_momentum = 0.0
     total_nodes = 0
 
+    # list to store batch losses
+    batch_losses = []
     for step, batch in enumerate(dataloader):
         batch = batch.to(device)
 
@@ -77,6 +79,8 @@ def train_one_epoch(model, dataloader, optimizer, device,
               f"Energy MSE: {mse_energy.item():.6f}, "
               f"Pressure MSE: {mse_pressure.item():.6f}, "
               f"Momentum MSE: {mse_momentum.item():.6f})")
+        
+        batch_losses.append(loss.item())
 
         # accumulate (weight by number of nodes so averaging is correct)
         n_nodes = p_density.numel()
@@ -87,23 +91,14 @@ def train_one_epoch(model, dataloader, optimizer, device,
         total_mse_pressure+= float(mse_pressure.detach()) * n_nodes
         total_mse_momentum+= float(mse_momentum.detach()) * n_nodes
 
-    if total_nodes == 0:
-        return {
-            "loss": 0.0,
-            "mse_density": 0.0,
-            "mse_energy": 0.0,
-            "mse_pressure": 0.0,
-            "mse_momentum": 0.0,
-            "num_nodes": 0
-        }
-
     return {
         "loss": total_loss / total_nodes,
         "mse_density": total_mse_density / total_nodes,
         "mse_energy": total_mse_energy / total_nodes,
         "mse_pressure": total_mse_pressure / total_nodes,
         "mse_momentum": total_mse_momentum / total_nodes,
-        "num_nodes": total_nodes
+        "num_nodes": total_nodes,
+        "batch_losses": batch_losses
     }
 
 
@@ -129,6 +124,11 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
         
         print(f"Epoch {epoch}/{epochs} - Train Loss: {results['loss']:.6f}")
         
+        # save batch losses for this epoch
+        loss_save_path = os.path.join(save_dir, f"losses_epoch_{epoch}.pt")
+        torch.save(torch.tensor(results["batch_losses"]), loss_save_path)
+        print(f"Saved losses: {loss_save_path}")
+
         # validation rollout
         if valid_dataset is not None:
             print("\n -----------------[Validation Rollout]------------------")
