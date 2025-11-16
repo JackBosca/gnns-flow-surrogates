@@ -1,4 +1,5 @@
 import os
+import random
 import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
@@ -137,7 +138,13 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
             steps_per_sim = None  # full rollout
             mid = lambda s: s // 2
 
-            for sim_i in range(num_val_sims):
+            total_sims = int(valid_dataset.n_sims)
+            true_val_sims = min(num_val_sims, max(0, total_sims))
+
+            # randomly sample among true_val_sims
+            sim_indices = random.sample(range(total_sims), true_val_sims)
+
+            for sim_i in sim_indices:
                 out = rollout_one_simulation(
                     model,
                     valid_dataset,
