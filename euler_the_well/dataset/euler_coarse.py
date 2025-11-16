@@ -34,10 +34,8 @@ class EulerPeriodicDataset(Dataset):
 
         # prediction time window (in timesteps)
         self.time_window = int(time_window)
-        if self.time_window < 1:
-            raise ValueError("time_window must be >= 1")
-        if self.time_window == 1 and target == "delta":
-            print("Warning: time_window=1 with target='delta' means target is always zero.")
+        if self.time_window < 2:
+            raise ValueError("time_window must be >= 2 to have input and target timesteps.")
 
         self.normalize = bool(normalize)
         self.target = str(target)
@@ -127,7 +125,7 @@ class EulerPeriodicDataset(Dataset):
             self._static_cache["y_periodic"] = y_periodic
 
         # number of usable start times per simulation (need t+time_window for target)
-        self.n_per_sim = max(0, self.n_t - self.time_window)
+        self.n_per_sim = max(0, self.n_t - self.time_window + 1)
         if self.n_per_sim == 0:
             raise RuntimeError("time_window too large for available timesteps")
  
@@ -449,7 +447,9 @@ class EulerPeriodicDataset(Dataset):
 
         # reshape momentum into (time_window*2, Hc, Wc)
         mom_ch = momentum.transpose(0, 3, 1, 2).reshape(self.time_window * 2, self.Hc, self.Wc)
-        x = np.concatenate([density, energy, pressure, mom_ch], axis=0)  # shape: (C_in=time_window*5, Hc, Wc)
+
+        # build x by considering all time window steps EXCEPT the last one (which is target)
+        x = np.concatenate([density[:-1], energy[:-1], pressure[:-1], mom_ch[:-2]], axis=0)  # shape: (C_in=(time_window-1)*5, Hc, Wc)
 
         # last input timestep to be attached as a global feature
         last_input_t = t_idx + self.time_window - 1 # if time_window=1, last_input_t = t_idx
