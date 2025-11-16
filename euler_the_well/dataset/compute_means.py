@@ -1,4 +1,4 @@
-from euler import EulerPeriodicDataset
+from euler_coarse import EulerPeriodicDataset
 import numpy as np
 
 def compute_mean_fields(ds):
