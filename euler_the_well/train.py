@@ -59,7 +59,7 @@ def train_one_epoch(model, dataloader, optimizer, device,
         mse_density = F.mse_loss(p_density, y_density, reduction="mean")
         mse_energy  = F.mse_loss(p_energy, y_energy, reduction="mean")
         mse_pressure= F.mse_loss(p_pressure, y_pressure, reduction="mean")
-        mse_momentum= F.mse_loss(p_momentum, y_momentum, reduction="mean")
+        mse_momentum= F.mse_loss(p_momentum, y_momentum, reduction="mean")  # reduction="mean" -> averaged over all dims
 
         loss = (
             loss_weights.get("density") * mse_density
@@ -84,6 +84,7 @@ def train_one_epoch(model, dataloader, optimizer, device,
         batch_losses.append(loss.item())
 
         # accumulate (weight by number of nodes so averaging is correct)
+        # (note that in the Euler case all sims have the same number of nodes)
         n_nodes = p_density.numel()
         total_nodes += n_nodes
         total_loss += float(loss.detach()) * n_nodes
@@ -101,7 +102,7 @@ def train_one_epoch(model, dataloader, optimizer, device,
         "num_nodes": total_nodes,
         "batch_losses": batch_losses
     }
-
+ 
 
 def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda", 
           epochs=10, save_dir="./checkpoints", save_every=1, fname="model"):
