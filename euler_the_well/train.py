@@ -214,7 +214,7 @@ if __name__ == "__main__":
 
     # get a sample for input/global dims
     sample = train_dataset[0]
-    input_node_feats = sample.x.shape[1]        # time_window * 5
+    input_node_feats = sample.x.shape[1]        # (time_window-1) * 5
     global_feat_dim = sample.u.shape[1] if getattr(sample, "u", None) is not None else 0
 
     # create model
@@ -226,6 +226,6 @@ if __name__ == "__main__":
     fname = f"model_coarsen_{coarsen[0]}-{coarsen[1]}"
 
     # train the model
-    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname)
+    train(model, train_loader, valid_dataset=None, optimizer=optimizer, fname=fname)
 
     print("Training complete.")
