@@ -5,6 +5,7 @@ from torch_geometric.loader import DataLoader
 from typing import Dict, Optional
 from dataset.euler_coarse import EulerPeriodicDataset
 from model.egnn_state import EGNNStateModel
+from rollout import rollout_one_simulation
 
 def train_one_epoch(model, dataloader, optimizer, device,
                     loss_weights: Optional[Dict[str, float]] = None, clip_grad: Optional[float] = None):
@@ -106,15 +107,14 @@ def train_one_epoch(model, dataloader, optimizer, device,
     }
 
 
-def train(model, train_loader, val_loader=None, optimizer=None, criterion=None, 
-          device="cuda", epochs=10, save_dir="./checkpoints", save_every=1, fname="model"):
+def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda", 
+          epochs=10, save_dir="./checkpoints", save_every=1, fname="model"):
     """
     Args:
         model: PyTorch model
         train_loader: DataLoader for training data
-        val_loader: optional DataLoader for validation
+        valid_dataset: optional Dataset for validation
         optimizer: PyTorch optimizer
-        criterion: loss function
         device: "cuda" or "cpu"
         epochs: number of epochs to train
         save_dir: directory to save checkpoints
@@ -129,21 +129,57 @@ def train(model, train_loader, val_loader=None, optimizer=None, criterion=None,
         
         print(f"Epoch {epoch}/{epochs} - Train Loss: {results['loss']:.6f}")
         
-        # optional validation
-        if val_loader is not None:
-            model.eval()
-            val_loss_total = 0.0
-            with torch.no_grad():
-                for batch in val_loader:
-                    batch = batch.to(device)
-                    output = model(batch)
-                    loss = criterion(output, batch['y'])
-                    val_loss_total += loss.item()
-            val_loss = val_loss_total / len(val_loader)
-            print(f"Epoch {epoch}/{epochs} - Val Loss: {val_loss:.6f}")
-            model.train()
+        # validation rollout
+        if valid_dataset is not None:
+            print("\n -----------------[Validation Rollout]------------------")
+ 
+            num_val_sims = 5
+            steps_per_sim = None  # full rollout
+            mid = lambda s: s // 2
+
+            for sim_i in range(num_val_sims):
+                out = rollout_one_simulation(
+                    model,
+                    valid_dataset,
+                    sim_idx=sim_i,
+                    start_t=0,
+                    rollout_steps=steps_per_sim,
+                    device=device,
+                    return_denormalized=True,
+                    save_path=None
+                )
+
+                metrics = out["metrics"]
+                n_steps = len(metrics["rmse_density"])
+                mid_step = mid(n_steps)
+
+                print(f"\nSim {sim_i}:")
+                print(f"  Step 0   | dens={metrics['rmse_density'][0]:.4e} "
+                    f"energy={metrics['rmse_energy'][0]:.4e} "
+                    f"press={metrics['rmse_pressure'][0]:.4e} "
+                    f"momentum_x={metrics['rmse_momentum_x'][0]:.4e} "
+                    f"momentum_y={metrics['rmse_momentum_y'][0]:.4e}")
+                print(f"  Step {mid_step} | dens={metrics['rmse_density'][mid_step]:.4e} "
+                    f"energy={metrics['rmse_energy'][mid_step]:.4e} "
+                    f"press={metrics['rmse_pressure'][mid_step]:.4e} "
+                    f"momentum_x={metrics['rmse_momentum_x'][mid_step]:.4e} "
+                    f"momentum_y={metrics['rmse_momentum_y'][mid_step]:.4e}")
+                print(f"  Step {n_steps-1} | dens={metrics['rmse_density'][-1]:.4e} "
+                    f"energy={metrics['rmse_energy'][-1]:.4e} "
+                    f"press={metrics['rmse_pressure'][-1]:.4e} "
+                    f"momentum_x={metrics['rmse_momentum_x'][-1]:.4e} "
+                    f"momentum_y={metrics['rmse_momentum_y'][-1]:.4e}")
+
+                avg_d = metrics["rmse_density"].mean()
+                avg_e = metrics["rmse_energy"].mean()
+                avg_p = metrics["rmse_pressure"].mean()
+                avg_mx = metrics["rmse_momentum_x"].mean()
+                avg_my = metrics["rmse_momentum_y"].mean()
+
+                print(f"  Avg RMSE | dens={avg_d:.4e} energy={avg_e:.4e} press={avg_p:.4e} "
+                      f"momentum_x={avg_mx:.4e} momentum_y={avg_my:.4e}")
         
-        # Save checkpoint
+        # save checkpoint
         if epoch % save_every == 0:
             # complete fname with epoch
             fname_epoch = f"{fname}_epoch_{epoch}.pt"
@@ -161,13 +197,12 @@ if __name__ == "__main__":
     # create dataset and dataloader
     coarsen = (2,2)
     train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, stats_path=stats_path, coarsen=coarsen)
-    valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, stats_path=stats_path)
+    valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, stats_path=stats_path, coarsen=coarsen)
 
     # print grid dimensions train
     print(f"Current grid dimension: {len(train_dataset._static_cache['x_coords_coarse'])}")
 
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-    valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False)
 
     # get a sample for input/global dims
     sample = train_dataset[0]
@@ -183,6 +218,6 @@ if __name__ == "__main__":
     fname = f"model_coarsen_{coarsen[0]}-{coarsen[1]}"
 
     # train the model
-    train(model, train_loader, optimizer=optimizer, fname=fname)
+    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname)
 
     print("Training complete.")
