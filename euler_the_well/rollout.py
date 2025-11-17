@@ -88,6 +88,12 @@ def rollout_one_simulation(
               "pressure": [...],
               "momentum": list of arrays (Hc,Wc,2)
           },
+          "ground_truth": {
+                "density": list of arrays (Hc,Wc) per predicted step (physical units),
+                "energy": [...],
+                "pressure": [...],
+                "momentum": list of arrays (Hc,Wc,2)
+            },
           "metrics": {
               "rmse_density": np.array([...]),
               "rmse_energy": ...,
@@ -117,10 +123,10 @@ def rollout_one_simulation(
     # normalize initial window if dataset.normalize and stats available (same as __getitem__)
     stats = getattr(dataset, "stats", None)
     if dataset.normalize and stats is not None:
-        density = (window["density"] - stats["mean"]["density"]) / stats["std"]["density"]
-        energy  = (window["energy"]  - stats["mean"]["energy"])  / stats["std"]["energy"]
-        pressure= (window["pressure"]- stats["mean"]["pressure"])/ stats["std"]["pressure"]
-        momentum= (window["momentum"]- stats["mean"]["momentum"])/ stats["std"]["momentum"]
+        density = (window["density"]  - stats["mean"]["density"])  / stats["std"]["density"]
+        energy  = (window["energy"]   - stats["mean"]["energy"])   / stats["std"]["energy"]
+        pressure= (window["pressure"] - stats["mean"]["pressure"]) / stats["std"]["pressure"]
+        momentum= (window["momentum"] - stats["mean"]["momentum"]) / stats["std"]["momentum"]
     else:
         density = window["density"].copy()
         energy  = window["energy"].copy()
@@ -181,9 +187,9 @@ def rollout_one_simulation(
         # - if dataset.target == "absolute" then model predicts normalized (last)
         if dataset.target == "delta":
             # reconstruct last from first + predicted_delta (all in normalized space if dataset.normalize)
-            pred_last_density  = density[0] + p_density # (Hc,Wc)
-            pred_last_energy   = energy[0]  + p_energy # (Hc,Wc)
-            pred_last_pressure = pressure[0]+ p_pressure # (Hc,Wc)
+            pred_last_density  = density[0]  + p_density # (Hc,Wc)
+            pred_last_energy   = energy[0]   + p_energy # (Hc,Wc)
+            pred_last_pressure = pressure[0] + p_pressure # (Hc,Wc)
             pred_last_momentum = momentum[0] + p_momentum # (Hc,Wc,2)
         else:
             pred_last_density  = p_density # (Hc,Wc)
@@ -331,6 +337,228 @@ def rollout_one_simulation(
     return results
 
 
+def evaluate_one_step(
+    model: torch.nn.Module,
+    dataset,
+    sim_idx: int,
+    start_t: int = 0,
+    steps: Optional[int] = None,
+    device: str = "cuda",
+    return_denormalized: bool = True,
+    save_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Evaluate 1-step predictions: for each step i, load ground-truth window starting at
+    (start_t + i), feed the model the input window (density[:-1], energy[:-1], pressure[:-1], mom_ch[:-2])
+    and predict the last timestep. Compute RMSE against the true last timestep.
+
+    Returns same structure as rollout_one_simulation:
+      { "predictions": { "density": [...], ... },
+        "ground_truth": { "density": [...], ... },
+        "metrics": { "rmse_density": np.array([...]), ... },
+        "timesteps": np.array([...]) }
+    """
+    device = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
+    model.eval()
+    model.to(device)
+
+    t_w = dataset.time_window
+    Hc, Wc = dataset.Hc, dataset.Wc
+
+    # default number of steps until end of simulation
+    if steps is None:
+        steps = dataset.n_t - (start_t + t_w - 1)
+
+    stats = getattr(dataset, "stats", None)
+
+    preds_density: List[np.ndarray] = []
+    preds_energy: List[np.ndarray] = []
+    preds_pressure: List[np.ndarray] = []
+    preds_momentum: List[np.ndarray] = []
+
+    gt_density: List[np.ndarray] = []
+    gt_energy: List[np.ndarray] = []
+    gt_pressure: List[np.ndarray] = []
+    gt_momentum: List[np.ndarray] = []
+
+    rmse_density: List[float] = []
+    rmse_energy: List[float] = []
+    rmse_pressure: List[float] = []
+    rmse_momentum_x: List[float] = []
+    rmse_momentum_y: List[float] = []
+
+    timesteps: List[int] = []
+
+    for i in range(steps):
+        current_start = start_t + i
+        # load ground-truth window (physical)
+        window = dataset._load_time_window(sim_idx, current_start)
+        # normalize if needed
+        if dataset.normalize and stats is not None:
+            density  = (window["density"]  - stats["mean"]["density"])  / stats["std"]["density"]
+            energy   = (window["energy"]   - stats["mean"]["energy"])   / stats["std"]["energy"]
+            pressure = (window["pressure"] - stats["mean"]["pressure"]) / stats["std"]["pressure"]
+            momentum = (window["momentum"] - stats["mean"]["momentum"]) / stats["std"]["momentum"]
+        else:
+            density  = window["density"].copy()
+            energy   = window["energy"].copy()
+            pressure = window["pressure"].copy()
+            momentum = window["momentum"].copy()
+
+        # build input exactly like Dataset.__getitem__
+        mom_ch = momentum.transpose(0, 3, 1, 2).reshape(t_w * 2, Hc, Wc)  # (t_w*2, Hc, Wc)
+        x_np = np.concatenate([density[:-1], energy[:-1], pressure[:-1], mom_ch[:-2]], axis=0)
+
+        # last input timestep scalar (normalized to [0,1])
+        predicted_t = current_start + (t_w - 1)
+        time_scalar = float(predicted_t) / float(dataset.n_t - 1)
+
+        # true last (normalized if dataset.normalize)
+        y_density_true  = density[-1].copy()
+        y_energy_true   = energy[-1].copy()
+        y_pressure_true = pressure[-1].copy()
+        y_momentum_true = momentum[-1].copy()
+
+        # build Data and run model
+        data = dataset._arrays_to_graph(x_np, y_density_true, y_energy_true, y_pressure_true, y_momentum_true, time_step=time_scalar)
+        data = data.to(device)
+        with torch.no_grad():
+            out = model(data)
+
+        p_density = out["density"].detach().cpu().numpy().reshape(Hc, Wc)
+        p_energy  = out["energy"].detach().cpu().numpy().reshape(Hc, Wc)
+        p_pressure= out["pressure"].detach().cpu().numpy().reshape(Hc, Wc)
+        p_momentum= out["momentum"].detach().cpu().numpy().reshape(Hc, Wc, 2)
+
+        # convert model outputs to predicted last (normalized space if dataset.normalize)
+        if dataset.target == "delta":
+            pred_last_density  = density[0]  + p_density
+            pred_last_energy   = energy[0]   + p_energy
+            pred_last_pressure = pressure[0] + p_pressure
+            pred_last_momentum = momentum[0] + p_momentum
+        else:
+            pred_last_density  = p_density
+            pred_last_energy   = p_energy
+            pred_last_pressure = p_pressure
+            pred_last_momentum = p_momentum
+
+        timesteps.append(predicted_t)
+
+        # ground truth (physical) for this predicted timestep -> from window (physical)
+        gt_d = window["density"][-1]
+        gt_e = window["energy"][-1]
+        gt_p = window["pressure"][-1]
+        gt_m = window["momentum"][-1]
+    
+        # compute RMSE (denormalize predictions first if normalized)
+        if dataset.normalize and stats is not None:
+            pred_d_den = _denormalize(pred_last_density, stats["mean"]["density"], stats["std"]["density"])
+            rmse_d = _compute_rmse(pred_d_den, gt_d)
+
+            pred_e_den = _denormalize(pred_last_energy, stats["mean"]["energy"], stats["std"]["energy"])
+            rmse_e = _compute_rmse(pred_e_den, gt_e)
+
+            pred_p_den = _denormalize(pred_last_pressure, stats["mean"]["pressure"], stats["std"]["pressure"])
+            rmse_p = _compute_rmse(pred_p_den, gt_p)
+
+            pred_m_den = _denormalize(pred_last_momentum, stats["mean"]["momentum"], stats["std"]["momentum"])
+            rmse_mx = _compute_rmse(pred_m_den[..., 0], gt_m[..., 0])
+            rmse_my = _compute_rmse(pred_m_den[..., 1], gt_m[..., 1])
+
+            # storage values
+            store_d = pred_d_den if return_denormalized else pred_last_density.copy()
+            store_e = pred_e_den if return_denormalized else pred_last_energy.copy()
+            store_p = pred_p_den if return_denormalized else pred_last_pressure.copy()
+            store_m = pred_m_den if return_denormalized else pred_last_momentum.copy()
+        else:
+            rmse_d = _compute_rmse(pred_last_density, gt_d)
+            rmse_e = _compute_rmse(pred_last_energy, gt_e)
+            rmse_p = _compute_rmse(pred_last_pressure, gt_p)
+            rmse_mx = _compute_rmse(pred_last_momentum[..., 0], gt_m[..., 0])
+            rmse_my = _compute_rmse(pred_last_momentum[..., 1], gt_m[..., 1])
+
+            store_d = pred_last_density.copy()
+            store_e = pred_last_energy.copy()
+            store_p = pred_last_pressure.copy()
+            store_m = pred_last_momentum.copy()
+
+        # append metrics and storage
+        print(f"Eval 1-step sim {sim_idx} t {predicted_t}: RMSE density={rmse_d:.6e}, energy={rmse_e:.6e}, pressure={rmse_p:.6e}, mx={rmse_mx:.6e}, my={rmse_my:.6e}")
+
+        preds_density.append(store_d.astype(np.float32))
+        preds_energy.append(store_e.astype(np.float32))
+        preds_pressure.append(store_p.astype(np.float32))
+        preds_momentum.append(store_m.astype(np.float32))
+
+        gt_density.append(gt_d.astype(np.float32))
+        gt_energy.append(gt_e.astype(np.float32))
+        gt_pressure.append(gt_p.astype(np.float32))
+        gt_momentum.append(gt_m.astype(np.float32))
+
+        rmse_density.append(rmse_d)
+        rmse_energy.append(rmse_e)
+        rmse_pressure.append(rmse_p)
+        rmse_momentum_x.append(rmse_mx)
+        rmse_momentum_y.append(rmse_my)
+
+    # prepare outputs
+    metrics = {
+        "rmse_density": np.array(rmse_density, dtype=np.float32),
+        "rmse_energy": np.array(rmse_energy, dtype=np.float32),
+        "rmse_pressure": np.array(rmse_pressure, dtype=np.float32),
+        "rmse_momentum_x": np.array(rmse_momentum_x, dtype=np.float32),
+        "rmse_momentum_y": np.array(rmse_momentum_y, dtype=np.float32),
+    }
+
+    results = {
+        "predictions": {
+            "density": preds_density,
+            "energy": preds_energy,
+            "pressure": preds_pressure,
+            "momentum": preds_momentum
+        },
+        "ground_truth": {
+            "density": gt_density,
+            "energy": gt_energy,
+            "pressure": gt_pressure,
+            "momentum": gt_momentum
+        },
+        "metrics": metrics,
+        "timesteps": np.array(timesteps, dtype=int)
+    }
+
+    # optional saving
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        try:
+            pred_d_stack = np.stack(preds_density, axis=0) if len(preds_density) > 0 else np.empty((0, Hc, Wc), dtype=np.float32)
+            pred_e_stack = np.stack(preds_energy, axis=0) if len(preds_energy) > 0 else np.empty((0, Hc, Wc), dtype=np.float32)
+            pred_p_stack = np.stack(preds_pressure, axis=0) if len(preds_pressure) > 0 else np.empty((0, Hc, Wc), dtype=np.float32)
+            pred_m_stack = np.stack(preds_momentum, axis=0) if len(preds_momentum) > 0 else np.empty((0, Hc, Wc, 2), dtype=np.float32)
+
+            gt_d_stack = np.stack(gt_density, axis=0) if len(gt_density) > 0 else np.empty((0, Hc, Wc), dtype=np.float32)
+            gt_e_stack = np.stack(gt_energy, axis=0) if len(gt_energy) > 0 else np.empty((0, Hc, Wc), dtype=np.float32)
+            gt_p_stack = np.stack(gt_pressure, axis=0) if len(gt_pressure) > 0 else np.empty((0, Hc, Wc), dtype=np.float32)
+            gt_m_stack = np.stack(gt_momentum, axis=0) if len(gt_momentum) > 0 else np.empty((0, Hc, Wc, 2), dtype=np.float32)
+
+            np.savez_compressed(save_path,
+                                preds_d=pred_d_stack,
+                                preds_e=pred_e_stack,
+                                preds_p=pred_p_stack,
+                                preds_m=pred_m_stack,
+                                gts_d=gt_d_stack,
+                                gts_e=gt_e_stack,
+                                gts_p=gt_p_stack,
+                                gts_m=gt_m_stack,
+                                timesteps=results["timesteps"],
+                                **metrics)
+            print(f"Saved 1-step evaluation to {save_path}")
+        except Exception as e:
+            print(f"Warning: failed to save eval results to {save_path}: {e}")
+
+    return results
+
+
 if __name__ == "__main__":
     from dataset.euler_coarse import EulerPeriodicDataset
     from model.egnn_state import EGNNStateModel
@@ -411,9 +639,11 @@ if __name__ == "__main__":
 
     sim_idx = 0
     t_idx = 0
-    save_path = f"./rollouts/rollout_sim{sim_idx}_t{t_idx}.npz"
+    # save_path = f"./rollouts/rollout_sim{sim_idx}_t{t_idx}.npz"
+    save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}.npz"
 
     # perform rollout of first sim starting from t=0
-    rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    # rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
 
     print("Rollout done.")
