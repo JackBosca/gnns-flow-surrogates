@@ -39,7 +39,7 @@ def plot_losses(losses_path='checkpoint', save_path="loss_plot.png", show=False,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--losses-path', type=str, default='checkpoint', help='Directory containing losses_epoch_*.pt')
+    parser.add_argument('--losses-path', type=str, default='checkpoints', help='Directory containing losses_epoch_*.pt')
     parser.add_argument('--save-path', type=str, default='loss_plot.png', help='Path to save the loss plot image')
     parser.add_argument('--show', action='store_true', help='Whether to display the plot interactively')
     parser.add_argument('--log-scale', action='store_true', help='Whether to use logarithmic scale for y-axis')
