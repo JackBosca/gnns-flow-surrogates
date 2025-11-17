@@ -228,7 +228,7 @@ if __name__ == "__main__":
                                          coarsen=coarsen, 
                                          target=target)
 
-    print(f"Total train samples (sum of 3 files): {len(train_dataset)}")
+    print(f"Total train samples: {len(train_dataset)}")
     # grid dims from the first dataset
     print(f"Current grid dimension: {len(train_datasets[0]._static_cache['x_coords_coarse'])}")
     print(f"Dataset time_window: {time_window}")
