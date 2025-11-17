@@ -1,9 +1,10 @@
 import os
 import random
+from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
+from torch.utils.data import ConcatDataset
 from torch_geometric.loader import DataLoader
-from typing import Dict, Optional
 from dataset.euler_coarse import EulerPeriodicDataset
 from model.egnn_state import EGNNStateModel
 from rollout import rollout_one_simulation
@@ -198,7 +199,10 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
 
 if __name__ == "__main__":
     # h5 files path
-    h5_path_train = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    h5_paths_train = ["/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5",
+                      "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.33_H2O_20.hdf5",
+                      "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"]
+    
     h5_path_valid = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
@@ -206,24 +210,28 @@ if __name__ == "__main__":
     time_window = 5
     coarsen = (2,2)
     target = "delta" # "delta" or "absolute"
-    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, 
-                                         stats_path=stats_path, 
-                                         time_window=time_window, 
-                                         coarsen=coarsen, 
-                                         target=target)
+    
+    # create three train datasets
+    train_datasets = [
+        EulerPeriodicDataset(h5_path=p, stats_path=stats_path,
+                             time_window=time_window, coarsen=coarsen, target=target)
+        for p in h5_paths_train
+    ]
+    # concatenate into a single dataset (one epoch = all samples across all three files)
+    train_dataset = ConcatDataset(train_datasets)
+
     valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, 
                                          stats_path=stats_path, 
                                          time_window=2, 
                                          coarsen=coarsen, 
                                          target=target)
 
-    # print grid dimensions train
-    print(f"Current grid dimension: {len(train_dataset._static_cache['x_coords_coarse'])}")
-
-    # print dataset settings
-    print(f"Dataset time_window: {train_dataset.time_window}")
-    print(f"Dataset coarsen: ({train_dataset.sh},{train_dataset.sw})")
-    print(f"Dataset target: {train_dataset.target}")
+    print(f"Total train samples (sum of 3 files): {len(train_dataset)}")
+    # grid dims from the first dataset
+    print(f"Current grid dimension: {len(train_datasets[0]._static_cache['x_coords_coarse'])}")
+    print(f"Dataset time_window: {time_window}")
+    print(f"Dataset coarsen: ({train_datasets[0].sh},{train_datasets[0].sw})")
+    print(f"Dataset target: {target}")
 
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
 
@@ -238,7 +246,7 @@ if __name__ == "__main__":
     # use AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
-    fname = f"model_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
+    fname = f"model_3datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
 
     # train the model
     train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname)
