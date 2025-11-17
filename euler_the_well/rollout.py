@@ -565,11 +565,14 @@ if __name__ == "__main__":
     from dataset.euler_coarse import EulerPeriodicDataset
     from model.egnn_state import EGNNStateModel
 
-    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
-    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
-    ds = EulerPeriodicDataset(h5_path, stats_path=stats_path, time_window=2, target="delta", normalize=True, coarsen=(2,2))
+    time_window = 5
+    coarsen = (2,2)
+    target = "delta"
+    ds = EulerPeriodicDataset(h5_path, stats_path=stats_path, time_window=time_window, target=target, normalize=True, coarsen=coarsen)
 
     # build sample to retrieve dimensions
     sample = ds[0]  # torch_geometric.data.Data
@@ -595,7 +598,7 @@ if __name__ == "__main__":
     )
  
     # --- robust model loader ---
-    checkpoint_path = "./checkpoints/model_coarsen_2-2_epoch_2.pt"
+    checkpoint_path = "./checkpoints/model_time-window_5_coarsen_2-2_target_delta_epoch_1.pt"
 
     # 1) load the file (map to cpu first)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
@@ -642,11 +645,11 @@ if __name__ == "__main__":
 
     sim_idx = 0
     t_idx = 0
-    # save_path = f"./rollouts/rollout_sim{sim_idx}_t{t_idx}.npz"
-    save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}_valid.npz"
+    save_path = f"./rollouts/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_train.npz"
+    # save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_valid.npz"
 
     # perform rollout of first sim starting from t=0
-    # rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
-    evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    # evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
 
     print("Rollout done.")
