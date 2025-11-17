@@ -206,7 +206,5 @@ if __name__ == "__main__":
 
             render_file(npz_file=path, out_path=out_path, fps=args.fps)
 
-            print(f"Saved video to {out_path}")
-
         except Exception as e:
             print(f"Failed to render {fname}: {e}")
