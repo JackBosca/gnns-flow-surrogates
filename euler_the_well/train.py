@@ -222,7 +222,7 @@ if __name__ == "__main__":
 
     valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, 
                                          stats_path=stats_path, 
-                                         time_window=2, 
+                                         time_window=time_window, 
                                          coarsen=coarsen, 
                                          target=target)
 
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     print(f"Dataset time_window: {time_window}")
     print(f"Dataset coarsen: ({train_datasets[0].sh},{train_datasets[0].sw})")
     print(f"Dataset target: {target}")
-
+ 
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
 
     # get a sample for input/global dims
