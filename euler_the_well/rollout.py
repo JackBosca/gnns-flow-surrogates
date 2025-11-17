@@ -645,7 +645,7 @@ if __name__ == "__main__":
 
     sim_idx = 0
     t_idx = 0
-    save_path = f"./rollouts/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_train.npz"
+    save_path = f"./rollouts/rollout_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_train.npz"
     # save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_valid.npz"
 
     # perform rollout of first sim starting from t=0
