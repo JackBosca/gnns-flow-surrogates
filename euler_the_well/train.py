@@ -106,7 +106,7 @@ def train_one_epoch(model, dataloader, optimizer, device,
  
 
 def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda", 
-          epochs=10, save_dir="./checkpoints", save_every=1, fname="model"):
+          epochs=10, save_dir="./checkpoints", save_every=1, fname="model", floss="loss"):
     """
     Args:
         model: PyTorch model
@@ -117,6 +117,8 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
         epochs: number of epochs to train
         save_dir: directory to save checkpoints
         save_every: save model every N epochs
+        fname: base model filename for saving checkpoints
+        floss: base loss filename for saving losses
     """
     model.to(device)
     os.makedirs(save_dir, exist_ok=True)
@@ -128,7 +130,7 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
         print(f"Epoch {epoch}/{epochs} - Train Loss: {results['loss']:.6f}")
         
         # save batch losses for this epoch
-        loss_save_path = os.path.join(save_dir, f"losses_epoch_{epoch}.pt")
+        loss_save_path = os.path.join(save_dir, f"{floss}_epoch_{epoch}.pt")
         torch.save(torch.tensor(results["batch_losses"]), loss_save_path)
         print(f"Saved losses: {loss_save_path}")
 
@@ -247,8 +249,9 @@ if __name__ == "__main__":
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
     fname = f"model_3datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
+    floss = f"loss_3datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
 
     # train the model
-    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname)
+    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname, floss=floss)
 
     print("Training complete.")
