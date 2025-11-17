@@ -244,7 +244,7 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
     
     for epoch in range(1, epochs + 1):
         # linear schedule for teacher forcing probability
-        teacher_forcing_prob = teacher_forcing_schedule(epoch, epochs, start=0.1, end=0.0)
+        teacher_forcing_prob = teacher_forcing_schedule(epoch, epochs, start=1.0, end=0.0)
         # train for one epoch
         results = train_one_epoch(model, train_loader, optimizer, device,
                                 teacher_forcing_prob=teacher_forcing_prob)
@@ -324,7 +324,7 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
 if __name__ == "__main__":
     # h5 files path
     h5_paths_train = ["/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5",
-                      "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.33_H2O_20.hdf5",
+                    #   "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.33_H2O_20.hdf5",
                       "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"]
     
     h5_path_valid = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
@@ -370,10 +370,10 @@ if __name__ == "__main__":
     # use AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
-    fname = f"model_3datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
-    floss = f"loss_3datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
+    fname = f"model_2datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
+    floss = f"loss_2datasets_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
 
     # train the model
-    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname, floss=floss)
+    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, epochs=5, fname=fname, floss=floss)
 
     print("Training complete.")
