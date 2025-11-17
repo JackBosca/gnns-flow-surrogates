@@ -1,6 +1,7 @@
 import os
 import random
 from typing import Dict, Optional
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import ConcatDataset
@@ -8,9 +9,12 @@ from torch_geometric.loader import DataLoader
 from dataset.euler_coarse import EulerPeriodicDataset
 from model.egnn_state import EGNNStateModel
 from rollout import rollout_one_simulation
+from utils import teacher_forcing_schedule
 
 def train_one_epoch(model, dataloader, optimizer, device,
-                    loss_weights: Optional[Dict[str, float]] = None, clip_grad: Optional[float] = None):
+                    loss_weights: Optional[Dict[str, float]] = None,
+                    clip_grad: Optional[float] = None,
+                    teacher_forcing_prob: float = 1.0):
     """
     Args:
         model: model returning dict with keys "density","energy","pressure","momentum".
@@ -22,6 +26,7 @@ def train_one_epoch(model, dataloader, optimizer, device,
         loss_weights: dict with keys "density","energy","pressure","momentum" -> float.
                       If None, equal weighting is used.
         clip_grad: optional max-norm for gradients.
+        - teacher_forcing_prob in [0,1]: prob of using ground-truth inputs (teacher forcing).
     Returns:
         dict with averaged metrics: loss, mse_density, mse_energy, mse_pressure, mse_momentum, num_nodes
     """
@@ -40,6 +45,35 @@ def train_one_epoch(model, dataloader, optimizer, device,
 
     # list to store batch losses
     batch_losses = []
+
+    # derive a base dataset (works with ConcatDataset or single Dataset)
+    ds_wrap = dataloader.dataset
+    if hasattr(ds_wrap, "datasets"): # ConcatDataset
+        base_ds = ds_wrap.datasets[0]
+    else:
+        base_ds = ds_wrap # single Dataset
+
+    Hc, Wc = int(base_ds.Hc), int(base_ds.Wc)
+    t_w = int(base_ds.time_window)
+    target_type = str(base_ds.target)
+
+    C_in = (t_w - 1) * 5  # expected input channels
+
+    # channel layout in x: [density(0..t_w-2), energy(...), pressure(...), mom_ch(...)]
+    d_count = t_w - 1
+    e_count = t_w - 1
+    p_count = t_w - 1
+    mom_count = 2 * (t_w - 1)
+    # slice indices
+    d_start = 0
+    d_end = d_start + d_count
+    e_start = d_end
+    e_end = e_start + e_count
+    p_start = e_end
+    p_end = p_start + p_count
+    m_start = p_end
+    m_end = m_start + mom_count
+    
     for step, batch in enumerate(dataloader):
         batch = batch.to(device)
 
@@ -49,8 +83,88 @@ def train_one_epoch(model, dataloader, optimizer, device,
         y_pressure= getattr(batch, "y_pressure", None).view(-1)
         y_momentum= getattr(batch, "y_momentum", None).view(-1, 2)
 
-        # forward
-        preds = model(batch)
+        # decide whether to teacher-force this batch
+        if random.random() < teacher_forcing_prob:
+            # standard teacher forcing: direct forward and loss
+            preds = model(batch)
+        else:
+            # run one no-grad forward on the original batch to get predicted last-step
+            with torch.no_grad():
+                preds_model = model(batch)
+
+            # reshape predictions to grid shapes (Hc, Wc) or (Hc,Wc,2)
+            N = batch.x.shape[0]
+            # sanity check for grid size
+            assert N == Hc * Wc, f"Node count mismatch: N={N}, Hc*Wc={Hc*Wc}"
+
+            p_d = preds_model["density"].detach().cpu().numpy().reshape(Hc, Wc)
+            p_e = preds_model["energy"].detach().cpu().numpy().reshape(Hc, Wc)
+            p_p = preds_model["pressure"].detach().cpu().numpy().reshape(Hc, Wc)
+            p_m = preds_model["momentum"].detach().cpu().numpy().reshape(Hc, Wc, 2)
+
+            # build input-channel array from batch.x so then can modify last input channels
+            x_nodes = batch.x.detach().cpu().numpy()  # (N, C_in)
+            x_np = x_nodes.T.reshape(C_in, Hc, Wc)    # (C_in, Hc, Wc)
+
+            # reconstruct predicted "last" in the same (normalized) space the model uses
+            if target_type == "delta":
+                # need the "first" timestep in the input to reconstruct delta -> last when target=="delta"
+                # the first density channel corresponds to time t0
+                first_density = x_np[d_start]  # (Hc,Wc)
+                first_energy = x_np[e_start]
+                first_pressure = x_np[p_start]
+                # momentum channels layout: t0_x, t0_y, t1_x, t1_y, ...
+                # to get momentum[0] (first timestep) need to reconstruct from m_start indices 0 and 1
+                first_mom_x = x_np[m_start]
+                first_mom_y = x_np[m_start + 1]
+                first_momentum = np.stack([first_mom_x, first_mom_y], axis=-1)  # (Hc,Wc,2)
+
+                pred_last_density  = first_density + p_d
+                pred_last_energy   = first_energy + p_e
+                pred_last_pressure = first_pressure + p_p
+                pred_last_momentum = first_momentum + p_m
+            else:
+                pred_last_density  = p_d
+                pred_last_energy   = p_e
+                pred_last_pressure = p_p
+                pred_last_momentum = p_m
+
+            # shift-and-append logic: drop the oldest timestep, shift the window forward by one,
+            # and append the predicted last timestep as the new most-recent input
+            # density: shape (d_count, Hc, Wc)
+            x_np[d_start:d_end] = np.concatenate(
+                [x_np[d_start + 1:d_end], np.expand_dims(pred_last_density, axis=0)],
+                axis=0
+            )
+            # energy
+            x_np[e_start:e_end] = np.concatenate(
+                [x_np[e_start + 1:e_end], np.expand_dims(pred_last_energy, axis=0)],
+                axis=0
+            )
+            # pressure
+            x_np[p_start:p_end] = np.concatenate(
+                [x_np[p_start + 1:p_end], np.expand_dims(pred_last_pressure, axis=0)],
+                axis=0
+            )
+            # momentum: channels are [t0_x,t0_y, t1_x,t1_y, ...], so drop first 2 channels and append pred x,y
+            x_np[m_start:m_end] = np.concatenate(
+                [
+                    x_np[m_start + 2:m_end],                                  # shifted previous momentum channels
+                    np.expand_dims(pred_last_momentum[..., 0], axis=0),       # append predicted momentum x
+                    np.expand_dims(pred_last_momentum[..., 1], axis=0)        # append predicted momentum y
+                ],
+                axis=0
+            )
+
+            # convert back to node-feature layout and create a mixed batch
+            x_mixed_nodes = torch.tensor(x_np.reshape(C_in, Hc * Wc).T, dtype=batch.x.dtype, device=batch.x.device)
+
+            # clone batch and replace x
+            batch_mixed = batch.clone()
+            batch_mixed.x = x_mixed_nodes
+
+            # forward with gradients on mixed batch
+            preds = model(batch_mixed)
 
         p_density = preds["density"].view(-1)
         p_energy  = preds["energy"].view(-1)
@@ -124,8 +238,11 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
     os.makedirs(save_dir, exist_ok=True)
     
     for epoch in range(1, epochs + 1):
-        # train one epoch
-        results = train_one_epoch(model, train_loader, optimizer, device)
+        # linear schedule for teacher forcing probability
+        teacher_forcing_prob = teacher_forcing_schedule(epoch, epochs, start=1.0, end=0.0)
+        # train for one epoch
+        results = train_one_epoch(model, train_loader, optimizer, device,
+                                teacher_forcing_prob=teacher_forcing_prob)
         
         print(f"Epoch {epoch}/{epochs} - Train Loss: {results['loss']:.6f}")
         
