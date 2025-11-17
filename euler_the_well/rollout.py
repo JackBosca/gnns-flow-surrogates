@@ -59,7 +59,8 @@ def rollout_one_simulation(
     rollout_steps: Optional[int] = None,
     device: str = "cuda",
     return_denormalized: bool = True,
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    verbose: bool = True
 ) -> Dict[str, Any]:
     """
     - dataset.time_window = number of timesteps loaded per call
@@ -246,8 +247,9 @@ def rollout_one_simulation(
             rmse_my = np.nan
 
         # print RMSEs for this step
-        print(f"Rollout sim {sim_idx} t {predicted_t}: RMSE density={rmse_d:.6e}, energy={rmse_e:.6e}",
-              f"pressure={rmse_p:.6e}, momentum_x={rmse_mx:.6e}, momentum_y={rmse_my:.6e}")
+        if verbose:
+            print(f"Rollout sim {sim_idx} t {predicted_t}: RMSE density={rmse_d:.6e}, energy={rmse_e:.6e}",
+                f"pressure={rmse_p:.6e}, momentum_x={rmse_mx:.6e}, momentum_y={rmse_my:.6e}")
 
         rmse_density.append(rmse_d)
         rmse_energy.append(rmse_e)
@@ -449,7 +451,7 @@ def evaluate_one_step(
         gt_e = window["energy"][-1]
         gt_p = window["pressure"][-1]
         gt_m = window["momentum"][-1]
-    
+
         # compute RMSE (denormalize predictions first if normalized)
         if dataset.normalize and stats is not None:
             pred_d_den = _denormalize(pred_last_density, stats["mean"]["density"], stats["std"]["density"])
