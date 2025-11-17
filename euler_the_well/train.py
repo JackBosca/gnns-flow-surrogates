@@ -204,8 +204,9 @@ if __name__ == "__main__":
 
     # create dataset and dataloader
     coarsen = (2,2)
-    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, stats_path=stats_path, coarsen=coarsen)
-    valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, stats_path=stats_path, coarsen=coarsen)
+    target = "delta" # "delta" or "absolute"
+    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, stats_path=stats_path, coarsen=coarsen, target=target)
+    valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, stats_path=stats_path, coarsen=coarsen, target=target)
 
     # print grid dimensions train
     print(f"Current grid dimension: {len(train_dataset._static_cache['x_coords_coarse'])}")
@@ -223,7 +224,7 @@ if __name__ == "__main__":
     # use AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
-    fname = f"model_coarsen_{coarsen[0]}-{coarsen[1]}"
+    fname = f"model_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
 
     # train the model
     train(model, train_loader, valid_dataset=None, optimizer=optimizer, fname=fname)
