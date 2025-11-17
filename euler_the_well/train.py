@@ -135,8 +135,7 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
         if valid_dataset is not None:
             print("\n -----------------[Validation Rollout]------------------")
  
-            num_val_sims = 5
-            steps_per_sim = None  # full rollout
+            num_val_sims = 2
             mid = lambda s: s // 2
 
             total_sims = int(valid_dataset.n_sims)
@@ -151,10 +150,11 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
                     valid_dataset,
                     sim_idx=sim_i,
                     start_t=0,
-                    rollout_steps=steps_per_sim,
+                    rollout_steps=None, # full rollout
                     device=device,
                     return_denormalized=True,
-                    save_path=None
+                    save_path=None,
+                    verbose=False
                 )
 
                 metrics = out["metrics"]
@@ -185,7 +185,7 @@ def train(model, train_loader, valid_dataset=None, optimizer=None, device="cuda"
                 avg_my = metrics["rmse_momentum_y"].mean()
 
                 print(f"  Avg RMSE | dens={avg_d:.4e} energy={avg_e:.4e} press={avg_p:.4e} "
-                      f"momentum_x={avg_mx:.4e} momentum_y={avg_my:.4e}")
+                      f"momentum_x={avg_mx:.4e} momentum_y={avg_my:.4e}\n\n")
         
         # save checkpoint
         if epoch % save_every == 0:
