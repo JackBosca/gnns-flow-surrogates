@@ -203,13 +203,27 @@ if __name__ == "__main__":
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     # create dataset and dataloader
+    time_window = 5
     coarsen = (2,2)
     target = "delta" # "delta" or "absolute"
-    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, stats_path=stats_path, coarsen=coarsen, target=target)
-    valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, stats_path=stats_path, coarsen=coarsen, target=target)
+    train_dataset = EulerPeriodicDataset(h5_path=h5_path_train, 
+                                         stats_path=stats_path, 
+                                         time_window=time_window, 
+                                         coarsen=coarsen, 
+                                         target=target)
+    valid_dataset = EulerPeriodicDataset(h5_path=h5_path_valid, 
+                                         stats_path=stats_path, 
+                                         time_window=2, 
+                                         coarsen=coarsen, 
+                                         target=target)
 
     # print grid dimensions train
     print(f"Current grid dimension: {len(train_dataset._static_cache['x_coords_coarse'])}")
+
+    # print dataset settings
+    print(f"Dataset time_window: {train_dataset.time_window}")
+    print(f"Dataset coarsen: ({train_dataset.sh},{train_dataset.sw})")
+    print(f"Dataset target: {train_dataset.target}")
 
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
 
@@ -224,9 +238,9 @@ if __name__ == "__main__":
     # use AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
-    fname = f"model_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
+    fname = f"model_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
 
     # train the model
-    train(model, train_loader, valid_dataset=None, optimizer=optimizer, fname=fname)
+    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer, fname=fname)
 
     print("Training complete.")
