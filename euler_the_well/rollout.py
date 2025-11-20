@@ -598,7 +598,7 @@ if __name__ == "__main__":
     )
  
     # --- robust model loader ---
-    checkpoint_path = "./checkpoints/model_time-window_5_coarsen_2-2_target_delta_epoch_1.pt"
+    checkpoint_path = "./checkpoints/model_2datasets_weak_forcing_time-window_5_coarsen_2-2_target_delta_epoch_5.pt"
 
     # 1) load the file (map to cpu first)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
@@ -645,7 +645,7 @@ if __name__ == "__main__":
 
     sim_idx = 0
     t_idx = 0
-    save_path = f"./rollouts/rollout_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_train.npz"
+    save_path = f"./rollouts/rollout_2datasets_weak_forcing_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_train.npz"
     # save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_valid.npz"
 
     # perform rollout of first sim starting from t=0
