@@ -306,15 +306,15 @@ class EulerPeriodicDataset(Dataset):
         Hc, Wc = self.Hc, self.Wc
 
         # preallocate arrays
-        density = np.empty((t_w, Hc, Wc), dtype=np.float32)
-        energy  = np.empty((t_w, Hc, Wc), dtype=np.float32)
-        pressure= np.empty((t_w, Hc, Wc), dtype=np.float32)
-        momentum= np.empty((t_w, Hc, Wc, 2), dtype=np.float32)
+        density  = np.empty((t_w, Hc, Wc), dtype=np.float32)
+        energy   = np.empty((t_w, Hc, Wc), dtype=np.float32)
+        pressure = np.empty((t_w, Hc, Wc), dtype=np.float32)
+        momentum = np.empty((t_w, Hc, Wc, 2), dtype=np.float32)
 
-        d_density = f["t0_fields"]["density"]
-        d_energy  = f["t0_fields"]["energy"]
-        d_pressure= f["t0_fields"]["pressure"]
-        d_mom     = f["t1_fields"]["momentum"]
+        d_density  = f["t0_fields"]["density"]
+        d_energy   = f["t0_fields"]["energy"]
+        d_pressure = f["t0_fields"]["pressure"]
+        d_mom      = f["t1_fields"]["momentum"]
 
         # read each timestep with read_direct
         for i in range(t_w):
@@ -340,7 +340,7 @@ class EulerPeriodicDataset(Dataset):
         """
         Convert arrays to a PyG Data object.
         Args:
-            x: np.ndarray of shape (C_in, H, W) - stacked input channels (time_window*5)
+            x: np.ndarray of shape (C_in, H, W) - stacked input channels ((time_window-1)*5)
             y_density, y_energy, y_pressure: np.ndarray of shape (H, W) - scalar targets
             y_momentum: np.ndarray of shape (H, W, 2) - vector target
             time_step: int or None - current timestep (optional global feature)
