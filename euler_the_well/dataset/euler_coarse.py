@@ -63,7 +63,7 @@ class EulerPeriodicDataset(Dataset):
             d_density = f["t0_fields"]["density"]
             dens_shape = tuple(d_density.shape)
 
-            # density shape: (n_sims, n_t, H, W)
+            # density shape: (n_sims, n_t, H, W), with n_t=101 (0, ..., 1.5s with dt=0.015s)
             self.n_sims, self.n_t, self.H, self.W = int(dens_shape[0]), int(dens_shape[1]), int(dens_shape[2]), int(dens_shape[3])
 
             # each simulations has a regular grid with (y, x) coordinates in [0,1]
@@ -479,6 +479,9 @@ class EulerPeriodicDataset(Dataset):
         self._ensure_h5()
 
         # map global flat index to simulation and starting timestep
+        # this ensures every flat index selects timesteps entirely inside one simulation, see edge cases below (t_w=2):
+        # idx = 99 -> divmod(99, 100) = (sim_idx=0, t_idx=99) -> _load_time_window(0,99) reads timesteps 99 and 100 (=1.5s) of simulation 0.
+        # idx = 100 -> divmod(100, 100) = (sim_idx=1, t_idx=0) -> _load_time_window(1,0) reads timesteps 0 and 1 of simulation 1
         sim_idx, t_idx = divmod(idx, self.n_per_sim)
 
         # load time window of data
