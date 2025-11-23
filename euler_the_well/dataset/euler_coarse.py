@@ -19,7 +19,8 @@ class EulerPeriodicDataset(Dataset):
         time_window=2,
         normalize=True,
         target="delta",          # "delta" or "absolute"
-        coarsen=(1, 1)           # (sh, sw) stride: (rows, cols)
+        coarsen=(1, 1),          # (sh, sw) stride: (rows, cols)
+        to_centroids=False       # convert vertex to cell-centered values
     ):
         # validate paths
         self.h5_path = Path(h5_path)
@@ -47,6 +48,9 @@ class EulerPeriodicDataset(Dataset):
         self.sh, self.sw = int(coarsen[0]), int(coarsen[1])
         if self.sh < 1 or self.sw < 1:
             raise ValueError("coarsen strides must be >= 1")
+        
+        # centroids conversion flag
+        self.to_centroids = bool(to_centroids)
 
         # lazy HDF5 handle
         self._h5 = None
@@ -90,13 +94,41 @@ class EulerPeriodicDataset(Dataset):
             self.Hc = self.H // self.sh
             self.Wc = self.W // self.sw
 
-            # coarsened coordinates (strided)
-            x_coords_coarse = x_buf[::self.sw].astype(np.float32)
-            y_coords_coarse = y_buf[::self.sh].astype(np.float32)
+            # coarsened coordinates (strided) at vertex locations
+            x_coords_coarse = x_buf[::self.sw].astype(np.float32)   # length Wc_vertices
+            y_coords_coarse = y_buf[::self.sh].astype(np.float32)   # length Hc_vertices
 
-            # coarsened pos template: pos_coarse[i,j] = (x_coords_coarse[j], y_coords_coarse[i])
-            Xc, Yc = np.meshgrid(x_coords_coarse, y_coords_coarse, indexing="xy")
-            pos_template_coarse = np.stack([Xc, Yc], axis=-1).astype(np.float32).reshape(self.Hc * self.Wc, 2) # (Hc, Wc, 2) -> (Nc, 2)
+            if self.to_centroids:
+                # convert to cell-centered coordinates and adjust Hc, Wc accordingly
+                # original vertex grid sizes (coarsened)
+                Hc_verts = y_coords_coarse.size
+                Wc_verts = x_coords_coarse.size
+
+                # compute cell-centered coordinates (centroids) by averaging adjacent vertex coords
+                x_coords_cent = 0.5 * (x_coords_coarse[:-1] + x_coords_coarse[1:])   # length Wc_cells = Wc_verts - 1
+                y_coords_cent = 0.5 * (y_coords_coarse[:-1] + y_coords_coarse[1:])   # length Hc_cells = Hc_verts - 1
+
+                # grid of centroid positions
+                Xc_cent, Yc_cent = np.meshgrid(x_coords_cent, y_coords_cent, indexing="xy")
+                pos_template_coarse_cells = np.stack([Xc_cent, Yc_cent], axis=-1).astype(np.float32).reshape((Hc_verts-1) * (Wc_verts-1), 2) # (Hc_cells, Wc_cells, 2) -> (Nc_cells, 2)
+
+                # update self.Hc and self.Wc to be cell counts (not vertex counts)
+                self.Hc = Hc_verts - 1
+                self.Wc = Wc_verts - 1
+
+                # cache centroid templates and centroid coordinate arrays
+                self._static_cache["pos_template_coarse"] = pos_template_coarse_cells
+                self._static_cache["x_coords_coarse"] = x_coords_cent
+                self._static_cache["y_coords_coarse"] = y_coords_cent
+            else:
+                # coarsened pos template: pos_coarse[i,j] = (x_coords_coarse[j], y_coords_coarse[i])
+                Xc, Yc = np.meshgrid(x_coords_coarse, y_coords_coarse, indexing="xy")
+                pos_template_coarse = np.stack([Xc, Yc], axis=-1).astype(np.float32).reshape(self.Hc * self.Wc, 2) # (Hc, Wc, 2) -> (Nc, 2)
+
+                # cache vertex templates and vertex coordinate arrays
+                self._static_cache["pos_template_coarse"] = pos_template_coarse
+                self._static_cache["x_coords_coarse"] = x_coords_coarse
+                self._static_cache["y_coords_coarse"] = y_coords_coarse
 
             # read boundary masks
             d_xmask = f["boundary_conditions"]["x_periodic"]["mask"]
@@ -115,9 +147,6 @@ class EulerPeriodicDataset(Dataset):
             self._static_cache["pos_template"] = pos_template
             self._static_cache["x_coords"] = x_buf
             self._static_cache["y_coords"] = y_buf
-            self._static_cache["pos_template_coarse"] = pos_template_coarse
-            self._static_cache["x_coords_coarse"] = x_coords_coarse
-            self._static_cache["y_coords_coarse"] = y_coords_coarse
             self._static_cache["gamma"] = gamma_val
             self._static_cache["x_periodic_mask"] = xmask
             self._static_cache["y_periodic_mask"] = ymask
@@ -164,6 +193,31 @@ class EulerPeriodicDataset(Dataset):
             except Exception:
                 pass
         self._h5 = None
+
+    def _convert_to_centroids(self, arr):
+        """
+        Convert vertex-centered array to cell-centered by averaging 2x2 vertex blocks.
+        Args:
+            arr: numpy array with last two dims equal to (Hv, Wv) vertex grid.
+                Leading dims (e.g. time) are preserved. Works for scalar fields
+                shape (..., Hv, Wv) and vector fields shape (..., Hv, Wv, C).
+        Returns:
+            numpy array with last two dims (Hv-1, Wv-1) containing cell-centered values.
+        """
+        # handle vector field case (e.g. momentum (..., Hv, Wv, 2))
+        if arr.ndim > 3:
+            # average over 2x2 blocks on Hv, Wv
+            top_left     = arr[..., :-1, :-1, :]
+            top_right    = arr[..., :-1, 1:, :]
+            bottom_left  = arr[..., 1:, :-1, :]
+            bottom_right = arr[..., 1:, 1:, :]
+            return 0.25 * (top_left + top_right + bottom_left + bottom_right)
+        # scalar case
+        top_left     = arr[..., :-1, :-1]
+        top_right    = arr[..., :-1, 1:]
+        bottom_left  = arr[..., 1:,  :-1]
+        bottom_right = arr[..., 1:,  1:]
+        return 0.25 * (top_left + top_right + bottom_left + bottom_right)
 
     def _build_full_grid_edges(self):
         """
@@ -270,16 +324,13 @@ class EulerPeriodicDataset(Dataset):
                     # Euclidean distance
                     r = (dx * dx + dy * dy) ** 0.5
 
-                    # wrap flag: 1.0 if wrapped on either axis else 0.0
-                    wrap_flag = 1.0 if wrapped else 0.0
-
                     src_list.append(a_id)
                     dst_list.append(b_id)
-                    attr_list.append([dx, dy, r, wrap_flag])
+                    attr_list.append([dx, dy, r])
 
         # convert to tensors and cache
         edge_index = torch.tensor([src_list, dst_list], dtype=torch.long) # shape (2, E)
-        edge_attr = torch.tensor(attr_list, dtype=torch.float32) # shape (E, 4)
+        edge_attr = torch.tensor(attr_list, dtype=torch.float32) # shape (E, 3)
 
         self._static_cache[cache_key_idx] = edge_index
         self._static_cache[cache_key_attr] = edge_attr
@@ -303,7 +354,12 @@ class EulerPeriodicDataset(Dataset):
         f = self._h5
 
         t_w = self.time_window
-        Hc, Wc = self.Hc, self.Wc
+        Hc, Wc = self.Hc, self.Wc   # if to_centroids is True, these are cell counts
+
+        if self.to_centroids:
+            # convert from cell-centered to vertex-centered sizes for reading
+            Hc += 1 
+            Wc += 1
 
         # preallocate arrays
         density  = np.empty((t_w, Hc, Wc), dtype=np.float32)
@@ -327,6 +383,13 @@ class EulerPeriodicDataset(Dataset):
             # slice for vector field with stride: (sim_idx, t_idx+i, ::sh, ::sw, :)
             src_sel_vector = np.s_[sim_idx, t_idx+i, ::self.sh, ::self.sw, :]
             d_mom.read_direct(momentum[i], source_sel=src_sel_vector)
+
+        if self.to_centroids:
+            # convert vertex-centered arrays (shape: (t_w, Hcv, Wcv)) -> cell-centered (t_w, Hc, Wc)
+            density  = self._convert_to_centroids(density)
+            energy   = self._convert_to_centroids(energy)
+            pressure = self._convert_to_centroids(pressure)
+            momentum = self._convert_to_centroids(momentum)
 
         return {
             "density": density,
