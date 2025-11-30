@@ -260,9 +260,9 @@ if __name__ == "__main__":
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     # create dataset and dataloader
-    time_window = 5
+    time_window = 2
     coarsen = (2,2)
-    target = "delta" # "delta" or "absolute"
+    target = "absolute" # "delta" or "absolute"
     
     # create three train datasets (use centroids conversion)
     train_datasets = [
@@ -310,7 +310,7 @@ if __name__ == "__main__":
     model = FluxGNN(in_node_dim=input_node_feats,
                     node_hidden=(128,),
                     node_embed_dim=64,
-                    n_layers=4,
+                    n_layers=6,
                     dt_max=0.015,
                     gamma=(gamma_val if gamma_val is not None else 1.4),
                     use_residual=True)
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     floss = f"loss_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}"
 
     # train the model
-    train(model, train_loader, valid_dataset=valid_dataset, optimizer=optimizer,
+    train(model, train_loader, valid_dataset=None, optimizer=optimizer,
           epochs=10, fname=fname, floss=floss, mixed_train=True,
           teacher_forcing_start=teacher_forcing_start)
 

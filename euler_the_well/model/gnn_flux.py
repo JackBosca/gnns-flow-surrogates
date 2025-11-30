@@ -46,21 +46,23 @@ class EdgeFluxModule(nn.Module):
     Build symmetric pairwise messages and produce per-edge shared fluxes:
     density/energy amplitudes (scalars) and vector momentum flux (2D).
     Inputs:
-        - node_u: (N, node_in_dim) conserved variables per node (e.g. [rho, rho_u_x, rho_u_y, e])
+        - node_u: (N, node_in_dim) conserved variables per node (e.g. [rho, e, p, rho_u_x, rho_u_y])
         - edge_index: (2, E) long tensor
         - edge_attr: (E, 3) float tensor with [dx, dy, r]
     Outputs:
         dict with keys:
             "a_rho": (E,) mass flux scalar amplitude (normal component)
             "a_e": (E,) energy flux scalar amplitude (normal component)
+            "a_p": (E,) pressure flux scalar amplitude (normal component)
             "F_rho": (E,2) mass flux vector = a_rho * n
-            "F_rhou": (E,2) momentum flux vector = a_n * n + a_t * t
             "F_e": (E,2) energy flux vector = a_e * n
+            "F_p": (E,2) pressure flux vector = a_p * n
+            "F_rhou": (E,2) momentum flux vector = a_n * n + a_t * t
             "n": (E,2) unit normals (from source->dest)
             "r": (E,) distances (face lengths)
     """
     def __init__(self,
-                 node_in_dim=4,
+                 node_in_dim=5,
                  node_embed_dim=64,
                  edge_attr_dim=1,   # by default only use r for invariance
                  edge_embed_dim=32,
@@ -85,8 +87,9 @@ class EdgeFluxModule(nn.Module):
 
         # psi networks to produce flux amplitudes
         self.psi_rho  = MLP(in_dim=node_embed_dim, hidden_dims=[64], out_dim=1)
-        self.psi_rhou = MLP(in_dim=node_embed_dim, hidden_dims=[64], out_dim=2)  # [a_n, a_t]
         self.psi_e    = MLP(in_dim=node_embed_dim, hidden_dims=[64], out_dim=1)
+        self.psi_p    = MLP(in_dim=node_embed_dim, hidden_dims=[64], out_dim=1)
+        self.psi_rhou = MLP(in_dim=node_embed_dim, hidden_dims=[64], out_dim=2)  # [a_n, a_t]
 
     def forward(self, node_u, edge_index, edge_attr):
         """
@@ -116,6 +119,7 @@ class EdgeFluxModule(nn.Module):
         # flux amplitudes
         a_rho = self.psi_rho(m_ij).squeeze(-1)   # (E,)
         a_e = self.psi_e(m_ij).squeeze(-1)     # (E,)
+        a_p = self.psi_p(m_ij).squeeze(-1)     # (E,)
         a_rhou = self.psi_rhou(m_ij)             # (E,2) -> [a_n, a_t] (n, t local components of momentum flux)
 
         # compute unit normal n and tangential t from dx, dy
@@ -129,15 +133,18 @@ class EdgeFluxModule(nn.Module):
 
         # build vector fluxes
         F_rho = a_rho.unsqueeze(-1) * n           # (E,2)
-        F_e = a_e.unsqueeze(-1)   * n           # (E,2)
+        F_e = a_e.unsqueeze(-1) * n           # (E,2)
+        F_p = a_p.unsqueeze(-1) * n           # (E,2)
         F_rhou = a_rhou[:, 0:1] * n + a_rhou[:, 1:2] * t  # (E,2), momentum flux vector not necessarily aligned with n
 
         return {
             "a_rho": a_rho,       # (E,)
             "a_e": a_e,           # (E,)
+            "a_p": a_p,           # (E,)
             "F_rho": F_rho,       # (E,2)
-            "F_rhou": F_rhou,     # (E,2)
             "F_e": F_e,           # (E,2)
+            "F_p": F_p,           # (E,2)
+            "F_rhou": F_rhou,     # (E,2)
             "n": n,               # (E,2)
             "r": r.squeeze(-1)    # (E,)
         }
@@ -161,13 +168,13 @@ class ConservativeMPLayer(nn.Module):
     def forward(self, node_u, edge_index, edge_attr, cell_area=None, dt_cfl=None):
         """
         Args:
-            node_u: (N, 4) tensor [rho, rho_u_x, rho_u_y, e]
+            node_u: (N, 5) tensor [rho, e, p, rho_u_x, rho_u_y]
             edge_index: (2, E) long tensor (directed edges, both directions present)
             edge_attr: (E, 3) float tensor [dx, dy, r] computed for the directed edge (src->dst)
             cell_area: None or tensor (N,) or float. If None, assumed uniform and area = mean(r)^2 approximated.
             dt_cfl: optional CFL condition scalar upper bound on dt (float). If provided, dt = min(dt, dt_cfl).
         Returns:
-            node_u_new: (N,4) updated conserved variables
+            node_u_new: (N,5) updated conserved variables
             diagnostics: dict with dt, optional flux norms
         """
         device = node_u.device
@@ -185,29 +192,34 @@ class ConservativeMPLayer(nn.Module):
         out = self.edge_module(node_u, torch.stack([src_u, dst_u], dim=0), edge_attr_u)
 
         F_rho  = out["F_rho"]    # (E_u,2)
-        F_rhou = out["F_rhou"]   # (E_u,2)
         F_e    = out["F_e"]      # (E_u,2)
+        F_p    = out["F_p"]      # (E_u,2)
+        F_rhou = out["F_rhou"]   # (E_u,2)
         n      = out["n"]        # (E_u,2) unit normal (from src_u -> dst_u)
         r_edge = out["r"]        # (E_u,)
 
         # face_length for 4-neighbour uniform grid equals r_edge
         face_length = r_edge     # (E_u,)
 
+        #NOTE: here it might be easier to directly read the a_* values from the out dict
         # compute scalar normal fluxes for scalars: a = <F, n>
         a_rho = (F_rho * n).sum(dim=-1)    # (E_u,)
         a_e = (F_e * n).sum(dim=-1)    # (E_u,)
+        a_p = (F_p * n).sum(dim=-1)    # (E_u,)
 
         # scale by face length to get integrated flux per edge
         scalar_flux_rho = a_rho * face_length    # (E_u,)
         scalar_flux_e = a_e * face_length    # (E_u,)
+        scalar_flux_p = a_p * face_length    # (E_u,)
         vector_flux_rhou = F_rhou * face_length.unsqueeze(-1)  # (E_u, 2)
 
         # build per-edge raw contributions
         # for src node: contribution = - (dt / area_src) * (flux)
         # for dst node: contribution = - (dt / area_dst) * (-flux) = + (dt / area_dst) * flux
-        s_raw = scalar_flux_rho        # (E_u,)
+        r_raw = scalar_flux_rho        # (E_u,)
         e_raw = scalar_flux_e          # (E_u,)
-        v_raw = vector_flux_rhou       # (E_u,2)
+        p_raw = scalar_flux_p          # (E_u,)
+        m_raw = vector_flux_rhou       # (E_u,2)
 
         # cell_area handling: accept scalar or per-node tensor
         if cell_area is None:
@@ -234,49 +246,58 @@ class ConservativeMPLayer(nn.Module):
 
         # compute per-edge contributions (scaled by dt / area of endpoint)
         # src contributions
-        contrib_rho_src = - (dt * s_raw) / area_tensor[src_u]         # (E_u,)
+        contrib_rho_src = - (dt * r_raw) / area_tensor[src_u]         # (E_u,)
         contrib_e_src   = - (dt * e_raw) / area_tensor[src_u]         # (E_u,)
-        contrib_v_src   = - (dt * v_raw) / area_tensor[src_u].unsqueeze(-1)  # (E_u,2)
+        contrib_p_src   = - (dt * p_raw) / area_tensor[src_u]         # (E_u,)
+        contrib_m_src   = - (dt * m_raw) / area_tensor[src_u].unsqueeze(-1)  # (E_u,2)
 
         # dst contributions (NOTE: sign flip inside formula for conservation)
-        contrib_rho_dst = - (dt * (-s_raw)) / area_tensor[dst_u] 
+        contrib_rho_dst = - (dt * (-r_raw)) / area_tensor[dst_u] 
         contrib_e_dst   = - (dt * (-e_raw)) / area_tensor[dst_u]
-        contrib_v_dst   = - (dt * (-v_raw)) / area_tensor[dst_u].unsqueeze(-1)
+        contrib_p_dst   = - (dt * (-p_raw)) / area_tensor[dst_u]
+        contrib_m_dst   = - (dt * (-m_raw)) / area_tensor[dst_u].unsqueeze(-1)
 
         # aggregate into node deltas using index_add
         delta_rho = torch.zeros((N,), device=device, dtype=node_u.dtype)
-        delta_e   = torch.zeros((N,), device=device, dtype=node_u.dtype)
+        delta_e = torch.zeros((N,), device=device, dtype=node_u.dtype)
+        delta_p = torch.zeros((N,), device=device, dtype=node_u.dtype)
         delta_rhou = torch.zeros((N, 2), device=device, dtype=node_u.dtype)
 
         # accumulate src contributions
         delta_rho.index_add_(0, src_u, contrib_rho_src)
         delta_e.index_add_(0,   src_u, contrib_e_src)
-        delta_rhou.index_add_(0, src_u, contrib_v_src)
+        delta_p.index_add_(0,   src_u, contrib_p_src)
+        delta_rhou.index_add_(0, src_u, contrib_m_src)
 
         # accumulate dst contributions
         delta_rho.index_add_(0, dst_u, contrib_rho_dst)
-        delta_e.index_add_(0,   dst_u, contrib_e_dst)
-        delta_rhou.index_add_(0, dst_u, contrib_v_dst)
+        delta_e.index_add_(0, dst_u, contrib_e_dst)
+        delta_p.index_add_(0, dst_u, contrib_p_dst)
+        delta_rhou.index_add_(0, dst_u, contrib_m_dst)
 
         # construct updated conserved U: [rho, rhou_x, rhou_y, e]
         rho = node_u[:, 0]
-        rhou = node_u[:, 1:3]
-        e_tot = node_u[:, 3]
+        e = node_u[:, 1]
+        p = node_u[:, 2]
+        rhou = node_u[:, 3:5]
+        
 
         rho_new = rho + delta_rho
+        e_new = e + delta_e
+        p_new = p + delta_p
         rhou_new = rhou + delta_rhou
-        e_new = e_tot + delta_e
 
         node_u_new = torch.cat([rho_new.unsqueeze(-1),
-                                rhou_new,
-                                e_new.unsqueeze(-1)], dim=-1)
+                                e_new.unsqueeze(-1),
+                                p_new.unsqueeze(-1),
+                                rhou_new], dim=-1)
 
         return node_u_new, float(dt.item())
 
 
 class FluxGNN(nn.Module):
     """
-    - Encodes node input features (Data.x) into conserved U = [rho, rho_u_x, rho_u_y, e]
+    - Encodes node input features (Data.x) into conserved U = [rho, e, p, rho_u_x, rho_u_y]
     - Applies `n_layers` conservative message-passing layers (each with its own EdgeFluxModule)
     - Returns predicted change (delta) in conserved variables by default (target='delta').
     - Also returns reconstructed primitives (rho, momentum, energy, pressure).
@@ -306,14 +327,14 @@ class FluxGNN(nn.Module):
         self.gamma = float(gamma) if gamma is not None else None
         self.use_residual = bool(use_residual)
 
-        # encoder: map arbitrary input node features -> conserved U = [rho, rho_u_x, rho_u_y, e]
+        # encoder: map arbitrary input node features -> conserved U = [rho, e, p, rho_u_x, rho_u_y]
         # needed for ex for time_window>2
-        self.input_encoder = MLP(in_dim=in_node_dim, hidden_dims=list(node_hidden), out_dim=4)
+        self.input_encoder = MLP(in_dim=in_node_dim, hidden_dims=list(node_hidden), out_dim=5)
 
         # build layers (each layer has its own EdgeFluxModule + ConservativeMPLayer)
         self.layers = nn.ModuleList()
         for _ in range(self.n_layers):
-            edge_mod = EdgeFluxModule(node_in_dim=4,
+            edge_mod = EdgeFluxModule(node_in_dim=5,
                                       node_embed_dim=node_embed_dim,
                                       edge_attr_dim=1,
                                       edge_embed_dim=32,
@@ -323,7 +344,7 @@ class FluxGNN(nn.Module):
             self.layers.append(layer)
 
         # final small MLP readout to allow adjustments
-        self.readout = MLP(in_dim=4, hidden_dims=[64], out_dim=4)
+        self.readout = MLP(in_dim=5, hidden_dims=[64], out_dim=5)
 
     def forward(self, data, dt_cfl=None):
         """
@@ -337,13 +358,13 @@ class FluxGNN(nn.Module):
             dt_cfl: optional float scalar upper bound on dt per layer (CFL condition)
         Returns:
             dict with keys:
-              'U0': initial conserved U (N,4)
-              'U_final': final conserved U after layers (N,4)
-              'delta_U': (N,4) = U_final - U0
+              'U0': initial conserved U (N,5)
+              'U_final': final conserved U after layers (N,5)
+              'delta_U': (N,5) = U_final - U0
               'rho': (N,) reconstructed density from U_final
-              'momentum': (N,2) reconstructed momentum from U_final
               'energy': (N,) reconstructed total energy from U_final
-              'pressure': (N,) reconstructed pressure from U_final (via EOS)
+              'pressure': (N,) reconstructed pressure from U_final
+              'momentum': (N,2) reconstructed momentum from U_final
               'dt_layers': list of dt per layer (floats)
         """
         device = data.x.device if isinstance(data.x, torch.Tensor) else torch.device("cpu")
@@ -353,7 +374,7 @@ class FluxGNN(nn.Module):
         edge_attr  = data.edge_attr.to(device)
 
         # initial conserved U from encoder
-        U0 = self.input_encoder(x_nodes)    # (N,4)
+        U0 = self.input_encoder(x_nodes)    # (N,5)
 
         # optional clamp or positivity enforcement could be added here
         U = U0
@@ -373,22 +394,18 @@ class FluxGNN(nn.Module):
 
         # split conserved vars
         rho = U_final[:, 0]                    # (N,)
-        rhou = U_final[:, 1:3]                 # (N,2)
-        E_tot = U_final[:, 3]                  # (N,)
-
-        # recover pressure using EOS
-        eps = 1e-12
-        ke = 0.5 * (rhou[:, 0] ** 2 + rhou[:, 1] ** 2) / (rho + eps)  # kinetic energy per vol
-        p = (E_tot - ke) * (self.gamma - 1.0)   # pressure EOS
-
+        e = U_final[:, 1]                      # (N,)
+        p = U_final[:, 2]                      # (N,)
+        rhou = U_final[:, 3:5]                 # (N,2)
+ 
         output = {
             "U0": U0,
             "U_final": U_final,
             "delta_U": U_final - U0,
             "density": rho,
-            "momentum": rhou,
-            "energy": E_tot,
+            "energy": e,
             "pressure": p,
+            "momentum": rhou,
             "dt_layers": dt_layers
         }
         return output
