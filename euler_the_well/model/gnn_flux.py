@@ -307,7 +307,6 @@ class FluxGNN(nn.Module):
         node_embed_dim: internal node embedding size used by EdgeFluxModule (defaults 64)
         n_layers: number of conservative message-passing layers
         dt_max: maximum learned dt per layer (passed to ConservativeMPLayer)
-        gamma: gas constant (float). If None, read from data.u global features externally.
         use_residual: whether to add skip connection from input U to final output (recommended True)
     """
     def __init__(self,
@@ -316,16 +315,16 @@ class FluxGNN(nn.Module):
                  node_embed_dim=64,
                  n_layers=4,
                  dt_max=0.015,
-                 gamma=1.4,
-                 use_residual=True):
+                 gamma=1.4):
         super().__init__()
 
         self.in_node_dim = in_node_dim
         self.node_embed_dim = node_embed_dim
         self.n_layers = int(n_layers)
         self.dt_max = float(dt_max)
+        
+        #TODO: remove gamma, not used
         self.gamma = float(gamma) if gamma is not None else None
-        self.use_residual = bool(use_residual)
 
         # encoder: map arbitrary input node features -> conserved U = [rho, e, p, rho_u_x, rho_u_y]
         # needed for ex for time_window>2
@@ -342,9 +341,6 @@ class FluxGNN(nn.Module):
                                       msg_hidden=(128,))
             layer = ConservativeMPLayer(edge_module=edge_mod, dt_max=self.dt_max, init_s=-5.0)
             self.layers.append(layer)
-
-        # final small MLP readout to allow adjustments
-        self.readout = MLP(in_dim=5, hidden_dims=[64], out_dim=5)
 
     def forward(self, data, dt_cfl=None):
         """
@@ -385,23 +381,16 @@ class FluxGNN(nn.Module):
             U, dt_val = layer(U, edge_index, edge_attr, cell_area=None, dt_cfl=dt_cfl)
             dt_layers.append(float(dt_val))
 
-        # optional readout tweak
-        U_final = self.readout(U)  # small residual mapping
-
-        # apply residual from U0 if desired
-        if self.use_residual:
-            U_final = U_final + U0
-
         # split conserved vars
-        rho = U_final[:, 0]                    # (N,)
-        e = U_final[:, 1]                      # (N,)
-        p = U_final[:, 2]                      # (N,)
-        rhou = U_final[:, 3:5]                 # (N,2)
- 
+        rho = U[:, 0]                    # (N,)
+        e = U[:, 1]                      # (N,)
+        p = U[:, 2]                      # (N,)
+        rhou = U[:, 3:5]                 # (N,2)
+  
         output = {
             "U0": U0,
-            "U_final": U_final,
-            "delta_U": U_final - U0,
+            "U_final": U,
+            "delta_U": U - U0,
             "density": rho,
             "energy": e,
             "pressure": p,
