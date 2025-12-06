@@ -149,7 +149,7 @@ def render_file(npz_path, out_dir, fps=None, size=(1920, 1080), skip=1,
     lims_p = get_robust_limits(g_p_r, p_p)
 
     # --- 3. FPS & Setup ---
-    dt = 0.01
+    dt = 0.015
     if fps is None:
         fps = 1.0 / (skip * dt)
     
