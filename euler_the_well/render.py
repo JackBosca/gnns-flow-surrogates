@@ -1,19 +1,48 @@
-# render.py: Euler rollout renderer
-# Produces a single video with 8 panels:
-# (Pred: density, energy, |momentum|, pressure)
-# (Ground Truth: density, energy, |momentum|, pressure)
+"""
+render.py
+
+Render videos from Euler rollout results (.npz).
+Produces a high-quality video with 8 panels.
+
+Style: 
+- High Resolution (1920x1080) & Simulation Matched FPS
+- ROBUST SCALING: Color limits anchored to GT percentiles (2%-98%).
+- DISTINCT COLORMAPS: Specific scientific colormaps for each variable.
+"""
+import os
+import argparse
 import numpy as np
+import matplotlib
+# Use Agg backend for headless high-quality rendering
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+from PIL import Image
 import cv2
 
 
+def fig2data(fig):
+    """
+    Convert a Matplotlib figure to an HxWx4 RGBA numpy array.
+    """
+    fig.canvas.draw()
+    w, h = fig.canvas.get_width_height()
+    buf = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+    try:
+        buf.shape = (h, w, 4)
+    except Exception:
+        buf.shape = (w, h, 4)
+        buf = buf.transpose((1, 0, 2))
+    # ARGB -> RGBA
+    buf = np.roll(buf, -1, axis=2)
+    return buf
+
+
 def compute_momentum_mag(mom):
-    # mom: (T, H, W, 2)
     return np.sqrt(mom[..., 0]**2 + mom[..., 1]**2)
 
 
 def resize_to_target(arr, target_hw):
-    """Resize numpy 2D or 3D arrays to (Hc, Wc)."""
     Hc, Wc = target_hw
     if arr.ndim == 2:
         return cv2.resize(arr, (Wc, Hc), interpolation=cv2.INTER_LINEAR)
@@ -27,30 +56,21 @@ def resize_to_target(arr, target_hw):
 
 
 def _load_from_npz(path):
-    """
-    Load the arrays from a rollout .npz.
-    Returns dict with keys:
-      preds: dict with density, energy, pressure, momentum
-      gts:   dict with density, energy, pressure, momentum
-    """
     P = np.load(path)
-    # predictions
-    if "preds_d" in P:
-        p_d = P["preds_d"]
-        p_e = P["preds_e"]
-        p_p = P["preds_p"]
-        p_m = P["preds_m"]
-    else:
+    if "preds_d" not in P:
         raise KeyError(f"Prediction arrays not found in {path}.")
 
-    # ground truths
+    p_d = P["preds_d"]
+    p_e = P["preds_e"]
+    p_p = P["preds_p"]
+    p_m = P["preds_m"]
+
     if "gts_d" in P:
         g_d = P["gts_d"]
         g_e = P["gts_e"]
         g_p = P["gts_p"]
         g_m = P["gts_m"]
     else:
-        # create empty arrays shaped to preds (so rendering still works)
         _, Hc, Wc = p_d.shape
         g_d = np.zeros((0, Hc, Wc), dtype=p_d.dtype)
         g_e = np.zeros((0, Hc, Wc), dtype=p_e.dtype)
@@ -61,150 +81,198 @@ def _load_from_npz(path):
             "gts":   {"d": g_d, "e": g_e, "p": g_p, "m": g_m}}
 
 
-def render_file(npz_file, out_path="rollout.mp4", fps=25):
+def get_robust_limits(arr_main, arr_fallback=None, p_low=2, p_high=98):
     """
-    npz_file: .npz produced by rollout_one_simulation(...) containing:
-        preds_* arrays and gts_* arrays (see rollout script)
+    Compute robust vmin/vmax using percentiles of the Ground Truth.
+    Ignores extreme outliers (shockwaves) to keep bulk fluid visible.
     """
-    data = _load_from_npz(npz_file)
-    p_d = data["preds"]["d"]         # (T, Hc, Wc)
+    if arr_main.size > 0:
+        data = arr_main
+    elif arr_fallback is not None and arr_fallback.size > 0:
+        data = arr_fallback
+    else:
+        return 0.0, 1.0
+
+    flat = data.ravel()
+    vmin = float(np.percentile(flat, p_low))
+    vmax = float(np.percentile(flat, p_high))
+    
+    if np.isclose(vmin, vmax):
+        vmax = vmin + 1e-6
+        
+    return vmin, vmax
+
+
+def render_file(npz_path, out_dir, fps=None, size=(1920, 1080), skip=1, 
+                codec='mp4v', write_frames=False):
+    
+    basename = os.path.splitext(os.path.basename(npz_path))[0]
+    out_path = os.path.join(out_dir, f'{basename}.mp4')
+
+    # --- 1. Load Data ---
+    data = _load_from_npz(npz_path)
+    
+    p_d = data["preds"]["d"]
     p_e = data["preds"]["e"]
     p_p = data["preds"]["p"]
-    p_m = data["preds"]["m"]         # (T, Hc, Wc, 2)
-    p_T = p_d.shape[0]
-    _, Hc, Wc = p_d.shape
-
-    p_mmag = compute_momentum_mag(p_m)  # (T, Hc, Wc)
-
-    g_d = data["gts"]["d"]            # (T_gt, H_gt, W_gt) or (T_gt, Hc, Wc)
+    p_m = data["preds"]["m"]
+    p_mmag = compute_momentum_mag(p_m)
+    
+    g_d = data["gts"]["d"]
     g_e = data["gts"]["e"]
     g_p = data["gts"]["p"]
-    g_m = data["gts"]["m"]            # (T_gt, H_gt, W_gt, 2)
+    g_m = data["gts"]["m"]
 
-    # determine if GT needs resizing to match coarse preds
-    if g_d.ndim == 3 and g_d.shape[1:] == (Hc, Wc):
-        g_d_r = g_d
-        g_e_r = g_e
-        g_p_r = g_p
-        g_mmag_r = compute_momentum_mag(g_m)
-    else:
-        # resize GT to match coarse grid (Hc, Wc)
-        g_d_r = resize_to_target(g_d, (Hc, Wc))
-        g_e_r = resize_to_target(g_e, (Hc, Wc))
-        g_p_r = resize_to_target(g_p, (Hc, Wc))
+    p_T, Hc, Wc = p_d.shape
+
+    if g_d.size > 0:
         g_mmag = compute_momentum_mag(g_m)
-        g_mmag_r = resize_to_target(g_mmag, (Hc, Wc))
+        if g_d.ndim == 3 and g_d.shape[1:] == (Hc, Wc):
+            g_d_r, g_e_r, g_p_r, g_mmag_r = g_d, g_e, g_p, g_mmag
+        else:
+            g_d_r = resize_to_target(g_d, (Hc, Wc))
+            g_e_r = resize_to_target(g_e, (Hc, Wc))
+            g_p_r = resize_to_target(g_p, (Hc, Wc))
+            g_mmag_r = resize_to_target(g_mmag, (Hc, Wc))
+    else:
+        g_d_r = g_e_r = g_p_r = g_mmag_r = np.zeros((0, Hc, Wc))
 
-    # ensure all arrays have same length T
-    T = min(p_T, g_d_r.shape[0])
-    p_d = p_d[:T]
-    p_e = p_e[:T]
-    p_p = p_p[:T]
-    p_mmag = p_mmag[:T]
+    T = min(p_T, g_d_r.shape[0]) if g_d_r.shape[0] > 0 else p_T
+    
+    p_d, p_e, p_p, p_mmag = p_d[:T], p_e[:T], p_p[:T], p_mmag[:T]
+    g_d_r, g_e_r, g_p_r, g_mmag_r = g_d_r[:T], g_e_r[:T], g_p_r[:T], g_mmag_r[:T]
 
-    g_d_r = g_d_r[:T]
-    g_e_r = g_e_r[:T]
-    g_p_r = g_p_r[:T]
-    g_mmag_r = g_mmag_r[:T]
+    # --- 2. Compute ROBUST Scales (GT Percentiles) ---
+    lims_d = get_robust_limits(g_d_r, p_d)
+    lims_e = get_robust_limits(g_e_r, p_e)
+    lims_m = get_robust_limits(g_mmag_r, p_mmag)
+    lims_p = get_robust_limits(g_p_r, p_p)
 
-    # set up video writer (8 panels arranged in 2×4 grid)
-    panel_h, panel_w = Hc, Wc
+    # --- 3. FPS & Setup ---
+    dt = 0.01
+    if fps is None:
+        fps = 1.0 / (skip * dt)
+    
+    fourcc = cv2.VideoWriter_fourcc(*codec)
+    writer = cv2.VideoWriter(out_path, fourcc, float(fps), (int(size[0]), int(size[1])))
 
-    # final video dimensions = 4*Wc wide, 2*Hc tall
-    frame_h = 2 * panel_h
-    frame_w = 4 * panel_w
+    frame_dir = None
+    if write_frames:
+        frame_dir = os.path.join(out_dir, f'{basename}_frames')
+        os.makedirs(frame_dir, exist_ok=True)
 
-    writer = cv2.VideoWriter(
-        out_path,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (frame_w, frame_h)
-    )
+    dpi = 100
+    fig_w = size[0] / dpi
+    fig_h = size[1] / dpi
+    
+    base_fs = 12 * (size[0] / 1920.0) 
+    title_fs = base_fs * 1.2
+    cbar_fs = base_fs * 0.9
 
-    # render each frame
-    fig, axes = plt.subplots(2, 4, figsize=(12, 6), constrained_layout=True)
-    plt.set_cmap("viridis")
+    indices = list(range(0, T, skip))
+    pbar = tqdm(indices, desc=f'Rendering {basename}', unit='frame')
 
-    for t in range(T):
-        # build 8 panels as images
-        panels = [
-            p_d[t], p_e[t], p_mmag[t], p_p[t],     # predictions
-            g_d_r[t], g_e_r[t], g_mmag_r[t], g_p_r[t]   # ground truth
+    # Define per-variable colormaps
+    # Index 0: Density, 1: Energy, 2: Momentum, 3: Pressure
+    VAR_CMAPS = ["viridis", "magma", "plasma", "cividis"]
+
+    for t in pbar:
+        fig, axes = plt.subplots(2, 4, figsize=(fig_w, fig_h), dpi=dpi)
+        fig.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.05, wspace=0.3, hspace=0.2)
+        
+        time_str = f"{t * dt:.2f} s"
+
+        columns = [
+            (p_d[t], g_d_r[t], lims_d, "Density"),
+            (p_e[t], g_e_r[t], lims_e, "Energy"),
+            (p_mmag[t], g_mmag_r[t], lims_m, "|Momentum|"),
+            (p_p[t], g_p_r[t], lims_p, "Pressure")
         ]
 
-        for ax, img in zip(axes.flat, panels):
-            ax.clear()
-            ax.imshow(img, origin="lower", aspect="equal")
-            ax.set_xticks([])
-            ax.set_yticks([])
+        for col_idx, (p_data, g_data, (vmin, vmax), title) in enumerate(columns):
+            current_cmap = VAR_CMAPS[col_idx]
 
-        axes[0, 0].set_title("Pred density")
-        axes[0, 1].set_title("Pred energy")
-        axes[0, 2].set_title("|Pred momentum|")
-        axes[0, 3].set_title("Pred pressure")
+            # Row 0: Prediction
+            ax_p = axes[0, col_idx]
+            im_p = ax_p.imshow(p_data, origin="lower", cmap=current_cmap, vmin=vmin, vmax=vmax, aspect='auto')
+            ax_p.set_xticks([])
+            ax_p.set_yticks([])
+            if col_idx == 0: 
+                ax_p.set_ylabel("Prediction", fontsize=title_fs, fontweight='bold')
+            ax_p.set_title(f"Pred {title}\n{time_str}", fontsize=title_fs)
 
-        axes[1, 0].set_title("GT density")
-        axes[1, 1].set_title("GT energy")
-        axes[1, 2].set_title("|GT momentum|")
-        axes[1, 3].set_title("GT pressure")
+            # Row 1: Ground Truth
+            ax_g = axes[1, col_idx]
+            im_g = ax_g.imshow(g_data, origin="lower", cmap=current_cmap, vmin=vmin, vmax=vmax, aspect='auto')
+            ax_g.set_xticks([])
+            ax_g.set_yticks([])
+            if col_idx == 0: 
+                ax_g.set_ylabel("Ground Truth", fontsize=title_fs, fontweight='bold')
+            ax_g.set_title(f"GT {title}", fontsize=title_fs)
 
-        # draw canvas to array (use tostring_argb -> convert ARGB to RGB)
-        fig.canvas.draw()
-        w, h = fig.canvas.get_width_height()
-        buf = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
-        buf.shape = (h, w, 4)                    # (H, W, 4) in ARGB order
-        buf = np.roll(buf, -1, axis=2)           # ARGB -> RGBA (move A to last)
-        img = buf[:, :, :3].copy()               # take RGB channels (uint8)
+            # Shared Colorbar
+            cbar = fig.colorbar(im_g, ax=[ax_p, ax_g], orientation='horizontal', fraction=0.05, pad=0.05)
+            cbar.ax.tick_params(labelsize=cbar_fs)
 
-        # resize the rendered matplotlib frame to final video size
-        img = cv2.resize(img, (frame_w, frame_h), interpolation=cv2.INTER_AREA)
+        img_rgba = fig2data(fig)
+        plt.close(fig)
 
-        # convert RGB to BGR for OpenCV
-        img = img[:, :, ::-1]
+        img_rgb = img_rgba[:, :, :3]
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        
+        if img_bgr.shape[0] != size[1] or img_bgr.shape[1] != size[0]:
+            img_bgr = cv2.resize(img_bgr, (size[0], size[1]))
 
-        writer.write(img)
+        writer.write(img_bgr)
+
+        if write_frames:
+            frame_path = os.path.join(frame_dir, f'{basename}_frame_{t:05d}.png')
+            Image.fromarray(img_rgb).save(frame_path)
 
     writer.release()
-    plt.close(fig)
-
-    print(f"\nSaved video to {out_path}\n")
 
 
-if __name__ == "__main__":
-    import argparse
-    import os
-
-    parser = argparse.ArgumentParser(description="Render Euler rollout results to video(s).")
+def main():
+    parser = argparse.ArgumentParser(description="Render Euler rollout results to high-quality video.")
     parser.add_argument("--rollout-dir", type=str, required=True,
                         help="Directory containing rollout .npz files.")
     parser.add_argument("--out-dir", type=str, default="videos",
-                        help="Where to save rendered mp4 videos.")
-    parser.add_argument("--fps", type=int, default=25,
-                        help="Frames per second for output video.")
+                        help="Output directory for videos.")
+    parser.add_argument("--fps", type=float, default=None,
+                        help="Frames per second. If not set, matches sim time.")
+    parser.add_argument('--size', nargs=2, type=int, default=[1920, 1080], 
+                        help='Output video size: width height (pixels)')
+    parser.add_argument('--skip', type=int, default=1, 
+                        help='Render every `skip` timesteps.')
+    parser.add_argument('--codec', type=str, default='mp4v', 
+                        help='FourCC codec for cv2 VideoWriter (try avc1 for H.264)')
+    parser.add_argument('--write-frames', action='store_true', 
+                        help='Also save each frame as PNG')
+
     args = parser.parse_args()
 
-    # ensure output directory exists
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # list rollout files
-    files = sorted(
-        f for f in os.listdir(args.rollout_dir)
-        if f.endswith(".npz")
-    )
+    files = sorted([
+        f for f in os.listdir(args.rollout_dir) if f.endswith(".npz")
+    ])
 
-    if len(files) == 0:
+    if not files:
         print("No .npz rollout files found in:", args.rollout_dir)
-        exit(0)
+        return
 
-    print(f"Found {len(files)} rollout files. Rendering...")
+    print(f"Found {len(files)} rollout files.")
 
     for fname in files:
         path = os.path.join(args.rollout_dir, fname)
         try:
-            print(f"\nRendering {fname} ...")
-            out_path = os.path.join(args.out_dir, fname.replace(".npz", ".mp4"))
-
-            render_file(npz_file=path, out_path=out_path, fps=args.fps)
-
+            render_file(path, args.out_dir, fps=args.fps, size=tuple(args.size),
+                        skip=args.skip, codec=args.codec,
+                        write_frames=args.write_frames)
         except Exception as e:
             print(f"Failed to render {fname}: {e}")
+            import traceback
+            traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
