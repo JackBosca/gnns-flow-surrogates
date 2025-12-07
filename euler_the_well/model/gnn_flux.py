@@ -73,15 +73,18 @@ class EdgeFluxModule(nn.Module):
         # node encoder
         self.phi_node = MLP(node_in_dim, hidden_dims=phi_hidden, out_dim=node_embed_dim)
 
-        # phi1 and phi2 (deep-set) -> must have same in/out dims
-        self.phi1 = MLP(node_embed_dim, hidden_dims=[node_embed_dim//2], out_dim=node_embed_dim)
-        self.phi2 = MLP(node_embed_dim, hidden_dims=[node_embed_dim//2], out_dim=node_embed_dim)
+        # # phi1 and phi2 (deep-set) -> must have same in/out dims
+        # self.phi1 = MLP(node_embed_dim, hidden_dims=[node_embed_dim//2], out_dim=node_embed_dim)
+        # self.phi2 = MLP(node_embed_dim, hidden_dims=[node_embed_dim//2], out_dim=node_embed_dim)
+
+        # symmetric phi -> must have same in/out dims
+        self.phi_symm = MLP(node_embed_dim, hidden_dims=(96,), out_dim=node_embed_dim)
 
         # edge encoder (takes r as attribute for invariance)
         self.phi_edge = MLP(edge_attr_dim, hidden_dims=[edge_embed_dim], out_dim=edge_embed_dim)
 
-        # message network: input = phi1(h_i)+phi1(h_j)+phi2(h_i)+phi2(h_j) + eps_ij
-        self.phi_msg = MLP(in_dim=node_embed_dim + edge_embed_dim,
+        # message network: input = phi1(h_i)+phi1(h_j)+phi2(h_i)+phi2(h_j) | (h_i - h_j)^2 | eps_ij
+        self.phi_msg = MLP(in_dim=node_embed_dim + node_embed_dim + edge_embed_dim,
                            hidden_dims=msg_hidden,
                            out_dim=node_embed_dim)
 
@@ -102,17 +105,33 @@ class EdgeFluxModule(nn.Module):
         h = self.phi_node(node_u)                # (N, node_embed_dim)
 
         # gather per-edge node embeddings
-        h_i = h[src]                             # (E, node_embed_dim)
-        h_j = h[dst]                             # (E, node_embed_dim)
+        #NOTE: pytorch effectively "expands" node features h onto the edges. 
+        # Because there are more edges than nodes, this duplicates the node features 
+        # for every edge that node participates in
+        h_src = h[src]                             # (E, node_embed_dim)
+        h_dst = h[dst]                             # (E, node_embed_dim)
 
-        # deep-set symmetric combination
-        v = self.phi1(h_i) + self.phi1(h_j) + self.phi2(h_i) + self.phi2(h_j)  # (E, node_embed_dim)
+        # compute transformed node features once
+        h_transformed = self.phi_symm(h)  # (N, node_embed_dim)
+
+        # gather for edges
+        h_src_trans = h_transformed[src]
+        h_dst_trans = h_transformed[dst]
+
+        # 1) deep-set symmetric combination -> tells the net: "we have high pressure here"
+        v_avg = h_src_trans + h_dst_trans # (E, node_embed_dim)
+        # # v_avg = self.phi1(h_i) + self.phi1(h_j) + self.phi2(h_i) + self.phi2(h_j)  # (E, node_embed_dim)
+        # v_avg = self.phi_symm(h_i) + self.phi_symm(h_j)  # (E, node_embed_dim)
+
+        # 2) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
+        # (h_src - h_dst)^2 is strictly symmetric
+        v_diff = (h_src - h_dst).pow(2) # (E, node_embed_dim)
 
         # edge embedding using ONLY r (edge_attr[:, 2:3]) for invariance, so m_ij = m_ji
         eps = self.phi_edge(edge_attr[:, 2:3])           # (E, edge_embed_dim)
 
-        # message latent
-        msg_in = torch.cat([v, eps], dim=-1)     # (E, node_embed_dim + edge_embed_dim)
+        # message latent: [average state, gradient info, geometry]
+        msg_in = torch.cat([v_avg, v_diff, eps], dim=-1)     # (E, node_embed_dim + node_embed_dim + edge_embed_dim)
         m_ij = self.phi_msg(msg_in)              # (E, node_embed_dim)
 
         # flux amplitudes
@@ -229,16 +248,6 @@ class ConservativeMPLayer(nn.Module):
                 if area_tensor.dim() == 0:
                     area_tensor = area_tensor.repeat(N)
 
-        # #TODO: implement CFL condition and be careful with clipping 
-        # # (non-differentiable -> detached tensors -> no gradients!)
-        # # compute learned dt and optionally clip to CFL
-        # dt = self.dt_max * torch.sigmoid(self.s)
-        # if dt_cfl is not None:
-        #     dt_val = float(dt_cfl)
-        #     if dt.item() > dt_val:
-        #         # clip to CFL value
-        #         dt = torch.tensor(dt_val, device=device, dtype=dt.dtype)
-
         # compute learned dt
         dt = self.dt_max * torch.sigmoid(self.s)
 
@@ -267,7 +276,6 @@ class ConservativeMPLayer(nn.Module):
         # aggregate into node deltas using index_add
         delta_rho = torch.zeros((N,), device=device, dtype=node_u.dtype)
         delta_e = torch.zeros((N,), device=device, dtype=node_u.dtype)
-        delta_p = torch.zeros((N,), device=device, dtype=node_u.dtype)
         delta_rhou = torch.zeros((N, 2), device=device, dtype=node_u.dtype)
 
         # accumulate src contributions
@@ -289,17 +297,37 @@ class ConservativeMPLayer(nn.Module):
         e_new = e + delta_e
         rhou_new = rhou + delta_rhou
 
-        # compute pressure using equation of state
-        rho_denorm, e_denorm, rhou_denorm = denorm(rho_new, e_new, rhou_new, stats)
-        p = eos(rho_denorm, e_denorm, rhou_denorm, gamma)
+        # PHYSICAL CLAMPING
+        # 1) denormalize to physical space
+        rho_phys, e_phys, rhou_phys = denorm(rho_new, e_new, rhou_new, stats)
 
-        # normalize p to concatenate back to node_u_new
-        _, _, p_norm, _ = norm(None, None, p, None, stats)
+        # 2) apply constraints on physical values
+        eps = 1e-6
+        # POSITIVITY
+        rho_phys = torch.clamp(rho_phys, min=eps)
+        e_phys   = torch.clamp(e_phys, min=eps)
+
+        # VELOCITY CAP (prevent infinite speed explosion)
+        u_vec = rhou_phys / rho_phys.unsqueeze(-1)
+        u_mag = torch.norm(u_vec, dim=-1)
+        
+        MAX_VEL = 100.0  # safe cap
+        scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
+        rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
+
+        # 3) re-normalize back
+        rho_new, e_new, _, rhou_new = norm(rho_phys, e_phys, None, rhou_phys, stats)
+
+        # compute pressure using physically valid (clamped) variables
+        p_phys = eos(rho_phys, e_phys, rhou_phys, gamma)
+
+        # normalize pressure
+        _, _, p_norm, _ = norm(None, None, p_phys, None, stats)
 
         node_u_new = torch.cat([
                     rho_new.unsqueeze(-1),
                     e_new.unsqueeze(-1),
-                    p_norm.unsqueeze(-1), # p is ready for the next layer
+                    p_norm.unsqueeze(-1),
                     rhou_new
                 ], dim=-1) # (N,5)
 
@@ -308,36 +336,25 @@ class ConservativeMPLayer(nn.Module):
 
 class FluxGNN(nn.Module):
     """
-    - Encodes node input features (Data.x) into conserved U = [rho, e, rho_u_x, rho_u_y]
     - Applies `n_layers` conservative message-passing layers (each with its own EdgeFluxModule)
     - Returns predicted change (delta) in conserved variables by default (target='delta').
     - Also returns reconstructed primitives (rho, energy, momentum).
     Args:
-        in_node_dim: input node feature dimension (Data.x.shape[1])
-        node_hidden: hidden dims for node encoder MLP (list/tuple)
         node_embed_dim: internal node embedding size used by EdgeFluxModule (defaults 64)
         n_layers: number of conservative message-passing layers
         dt_max: maximum learned dt per layer (passed to ConservativeMPLayer)
     """
     def __init__(self,
-                 in_node_dim,
-                 node_hidden=(128,),
                  node_embed_dim=64,
                  n_layers=4,
-                 dt_max=0.015,
+                 dt_max=0.005,
                  gamma=1.4):
         super().__init__()
 
-        self.in_node_dim = in_node_dim
         self.node_embed_dim = node_embed_dim
         self.n_layers = int(n_layers)
         self.dt_max = float(dt_max)
-    
         self.gamma = float(gamma) if gamma is not None else None
-
-        # encoder: map arbitrary input node features -> conserved U = [rho, e, rho_u_x, rho_u_y]
-        # needed for ex for time_window>2
-        self.input_encoder = MLP(in_dim=in_node_dim, hidden_dims=list(node_hidden), out_dim=4)
 
         # build layers (each layer has its own EdgeFluxModule + ConservativeMPLayer)
         self.layers = nn.ModuleList()
@@ -350,6 +367,47 @@ class FluxGNN(nn.Module):
                                       msg_hidden=(128,))
             layer = ConservativeMPLayer(edge_module=edge_mod, dt_max=self.dt_max, init_s=-5.0)
             self.layers.append(layer)
+
+    def _extract_initial_state(self, x):
+        """
+        Deterministically extract the LAST timestep from the input window `x`.
+        
+        Dataset Layout:
+        x = np.concatenate([
+            density[:-1],   # shape (T_in, H, W)
+            energy[:-1],    # shape (T_in, H, W)
+            pressure[:-1],  # shape (T_in, H, W)
+            mom_ch[:-2]     # shape (2 * T_in, H, W) -> [x0, y0, x1, y1...]
+        ], axis=0)
+        
+        Where T_in = time_window - 1.
+        """
+        C_total = x.shape[1]
+        
+        # calculate T_in (number of history steps in input)
+        T_in = C_total // 5 # 3 scalars + 1 vector (2 components) = 5
+        
+        # 1. density is x[:, 0 : T_in] -> last density is at index (T_in - 1)
+        rho_idx = T_in - 1
+        
+        # 2. energy is x[:, T_in : 2*T_in] -> last energy is at index (2*T_in - 1)
+        e_idx = (2 * T_in) - 1
+        
+        # 3. pressure is x[:, 2*T_in : 3*T_in] -> last pressure is at index (3*T_in - 1)
+        p_idx = (3 * T_in) - 1
+        
+        # 4. momentum is x[:, 3*T_in : 5*T_in] (length 2 * T_in), layout is [x0, y0, x1, y1, ...]
+        mom_start = 3 * T_in
+        mx_idx = mom_start + 2 * (T_in - 1) # last x component is at mom_start + 2*(T_in-1)
+        my_idx = mx_idx + 1 # last y component is at mom_start + 2*(T_in-1) + 1
+        
+        # extract tensors
+        rho0 = x[:, rho_idx]
+        e0   = x[:, e_idx]
+        p0   = x[:, p_idx]
+        rhou0 = torch.stack([x[:, mx_idx], x[:, my_idx]], dim=-1)
+        
+        return rho0, e0, p0, rhou0
 
     def compute_cfl_limit(self, U, edge_attr, stats, cfl_factor=0.5):
         """
@@ -380,7 +438,7 @@ class FluxGNN(nn.Module):
             # max wave speed per node
             max_wave_speed = u_mag + c
 
-            # get Grid Spacing dx
+            # get grid spacing dx
             # use min(r) of the whole mesh (conservative)
             min_dx = edge_attr[:, 2].min()
 
@@ -416,22 +474,42 @@ class FluxGNN(nn.Module):
         edge_index = data.edge_index.to(device)
         edge_attr  = data.edge_attr.to(device)
 
-        # initial conserved U from encoder
-        U_conserved = self.input_encoder(x_nodes)    # (N,4)
+        # extract U0 directly from the input features
+        rho0, e0, p0, rhou0 = self._extract_initial_state(x_nodes) # this fixes U0 to be exactly the input state
 
-        # compute initial pressure so layer 1 works
-        rho0, e0, rhou0 = U_conserved[:, 0], U_conserved[:, 1], U_conserved[:, 2:4]
+        # PHYSICAL CLAMPING BEFORE LAYERS
+        # denorm
+        rho_phys, e_phys, rhou_phys = denorm(rho0, e0, rhou0, stats)
+
+        # POSITIVITY
+        eps = 1e-6
+        rho_phys = torch.clamp(rho_phys, min=eps)
+        e_phys   = torch.clamp(e_phys, min=eps)
         
-        # un-normalize -> EOS -> re-normalize
-        rho_d, e_d, rhou_d = denorm(rho0, e0, rhou0, stats)
-        #NOTE: using the global feature gamma might be better here, see commented line below
-        # batch_gamma = data.u[:, 0] if data.u is not None else torch.tensor(1.4).to(device)
+        # VELOCITY CAP
+        u_vec = rhou_phys / rho_phys.unsqueeze(-1)
+        u_mag = torch.norm(u_vec, dim=-1)
+        MAX_VEL = 100.0 
+        scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
+        rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
+
+        # renorm
+        rho0, e0, _, rhou0 = norm(rho_phys, e_phys, None, rhou_phys, stats)
         
-        p0 = eos(rho_d, e_d, rhou_d, self.gamma) # this is in physical units
+        # recalculate p0 consistent with clamped variables
+        p_phys = eos(rho_phys, e_phys, rhou_phys, self.gamma)
+        _, _, p_norm, _ = norm(None, None, p_phys, None, stats)
         
-        # create the 5-vector state U = [rho, e, p, rhou]
-        _, _, p_norm, _ = norm(None, None, p0, None, stats) # helper function to normalize P
-        U = torch.cat([U_conserved[:, :2], p_norm.unsqueeze(-1), U_conserved[:, 2:]], dim=-1) # (N, 5)
+        # this is the safe starting state
+        U = torch.cat([
+             rho0.unsqueeze(-1), 
+             e0.unsqueeze(-1), 
+             p_norm.unsqueeze(-1), 
+             rhou0
+        ], dim=-1) 
+
+        # keep a copy of the starting U to compute delta later
+        U_conserved_start = torch.cat([rho0.unsqueeze(-1), e0.unsqueeze(-1), rhou0], dim=-1)
 
         # calculate dynamic CFL limit based on current state U
         current_dt_cfl = self.compute_cfl_limit(U, data.edge_attr, stats)
@@ -448,13 +526,13 @@ class FluxGNN(nn.Module):
         p = U[:, 2]                      # (N,)
         rhou = U[:, 3:5]                 # (N,2)
   
-        # slice U to exclude pressure (index 2) before subtracting
+        # Final conserved vars
         U_conserved_final = torch.cat([U[:, 0:2], U[:, 3:5]], dim=-1)
 
         output = {
-            "U0": U_conserved,
+            "U0": U_conserved_start,
             "U_final": U,
-            "delta_U": U_conserved_final - U_conserved,
+            "delta_U": U_conserved_final - U_conserved_start,
             "density": rho,
             "energy": e,
             "pressure": p,
