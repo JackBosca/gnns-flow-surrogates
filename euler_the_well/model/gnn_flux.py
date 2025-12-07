@@ -64,7 +64,7 @@ class EdgeFluxModule(nn.Module):
     def __init__(self,
                  node_in_dim=5,
                  node_embed_dim=64,
-                 edge_attr_dim=1,   # by default only use r for invariance
+                 edge_attr_dim=3,
                  edge_embed_dim=32,
                  phi_hidden=(64,),
                  msg_hidden=(128,)):
@@ -73,18 +73,14 @@ class EdgeFluxModule(nn.Module):
         # node encoder
         self.phi_node = MLP(node_in_dim, hidden_dims=phi_hidden, out_dim=node_embed_dim)
 
-        # # phi1 and phi2 (deep-set) -> must have same in/out dims
-        # self.phi1 = MLP(node_embed_dim, hidden_dims=[node_embed_dim//2], out_dim=node_embed_dim)
-        # self.phi2 = MLP(node_embed_dim, hidden_dims=[node_embed_dim//2], out_dim=node_embed_dim)
-
         # symmetric phi -> must have same in/out dims
         self.phi_symm = MLP(node_embed_dim, hidden_dims=(96,), out_dim=node_embed_dim)
 
-        # edge encoder (takes r as attribute for invariance)
+        # edge encoder
         self.phi_edge = MLP(edge_attr_dim, hidden_dims=[edge_embed_dim], out_dim=edge_embed_dim)
 
-        # message network: input = phi1(h_i)+phi1(h_j)+phi2(h_i)+phi2(h_j) | (h_i - h_j)^2 | eps_ij
-        self.phi_msg = MLP(in_dim=node_embed_dim + node_embed_dim + edge_embed_dim,
+        # message network: input = h_i | h_j | phi_symm(h_i)+phi_symm(h_j) | (h_i - h_j)^2 | eps_ij
+        self.phi_msg = MLP(in_dim=4*node_embed_dim + edge_embed_dim,
                            hidden_dims=msg_hidden,
                            out_dim=node_embed_dim)
 
@@ -120,18 +116,16 @@ class EdgeFluxModule(nn.Module):
 
         # 1) deep-set symmetric combination -> tells the net: "we have high pressure here"
         v_avg = h_src_trans + h_dst_trans # (E, node_embed_dim)
-        # # v_avg = self.phi1(h_i) + self.phi1(h_j) + self.phi2(h_i) + self.phi2(h_j)  # (E, node_embed_dim)
-        # v_avg = self.phi_symm(h_i) + self.phi_symm(h_j)  # (E, node_embed_dim)
 
         # 2) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
         # (h_src - h_dst)^2 is strictly symmetric
         v_diff = (h_src - h_dst).pow(2) # (E, node_embed_dim)
 
-        # edge embedding using ONLY r (edge_attr[:, 2:3]) for invariance, so m_ij = m_ji
-        eps = self.phi_edge(edge_attr[:, 2:3])           # (E, edge_embed_dim)
+        # by providing dx, dy, the net knows the orientation of the face
+        eps = self.phi_edge(edge_attr)           # (E, edge_embed_dim)
 
-        # message latent: [average state, gradient info, geometry]
-        msg_in = torch.cat([v_avg, v_diff, eps], dim=-1)     # (E, node_embed_dim + node_embed_dim + edge_embed_dim)
+        # message latent: [source, destination, average state, gradient info, geometry]
+        msg_in = torch.cat([h_src, h_dst, v_avg, v_diff, eps], dim=-1)     # (E, 4*node_embed_dim + edge_embed_dim)
         m_ij = self.phi_msg(msg_in)              # (E, node_embed_dim)
 
         # flux amplitudes
@@ -169,17 +163,12 @@ class ConservativeMPLayer(nn.Module):
     One conservative message-passing layer.
     Args:
         edge_module: instance of EdgeFluxModule (computes per-edge fluxes)
-        dt_max: maximum allowed learned dt (float)
-        init_s: initial value for s so sigmoid(s) small (default -5) and below CFL condition
     """ 
-    def __init__(self, edge_module: EdgeFluxModule, dt_max: float = 0.015, init_s: float = -5.0):
+    def __init__(self, edge_module: EdgeFluxModule):
         super().__init__()
         self.edge_module = edge_module
-        self.dt_max = float(dt_max)
-        # learnable scalar controlling dt per layer (will be sigmoided)
-        self.s = nn.Parameter(torch.tensor(float(init_s), dtype=torch.float32))
 
-    def forward(self, node_u, edge_index, edge_attr, gamma, stats, cell_area=None, dt_cfl=None):
+    def forward(self, node_u, edge_index, edge_attr, gamma, stats, dt, cell_area=None, dt_cfl=None):
         """
         Args:
             node_u: (N, 5) tensor [rho, e, p, rho_u_x, rho_u_y]
@@ -187,6 +176,7 @@ class ConservativeMPLayer(nn.Module):
             edge_attr: (E, 3) float tensor [dx, dy, r] computed for the directed edge (src->dst)
             gamma: specific heat ratio (float)
             stats: dict with dataset statistics for (de)normalization
+            dt: time step (float)
             cell_area: None or tensor (N,) or float. If None, assumed uniform and area = mean(r)^2 approximated.
             dt_cfl: optional CFL condition scalar upper bound on dt (float). If provided, dt = min(dt, dt_cfl).
         Returns:
@@ -247,9 +237,6 @@ class ConservativeMPLayer(nn.Module):
                 area_tensor = cell_area.to(device=device, dtype=node_u.dtype)
                 if area_tensor.dim() == 0:
                     area_tensor = area_tensor.repeat(N)
-
-        # compute learned dt
-        dt = self.dt_max * torch.sigmoid(self.s)
 
         # differentiable clipping
         if dt_cfl is not None:
@@ -331,7 +318,7 @@ class ConservativeMPLayer(nn.Module):
                     rhou_new
                 ], dim=-1) # (N,5)
 
-        return node_u_new, float(dt.item())
+        return node_u_new, dt
 
 
 class FluxGNN(nn.Module):
@@ -345,27 +332,32 @@ class FluxGNN(nn.Module):
         dt_max: maximum learned dt per layer (passed to ConservativeMPLayer)
     """
     def __init__(self,
+                 node_in_dim=5,
                  node_embed_dim=64,
                  n_layers=4,
-                 dt_max=0.005,
+                 dataset_dt=0.015,
                  gamma=1.4):
         super().__init__()
 
+        self.node_in_dim = node_in_dim # > 5 if time_window>2
         self.node_embed_dim = node_embed_dim
         self.n_layers = int(n_layers)
-        self.dt_max = float(dt_max)
+        self.dataset_dt = float(dataset_dt)
         self.gamma = float(gamma) if gamma is not None else None
+        
+        # calculate the required step per layer
+        self.fixed_dt_per_layer = self.dataset_dt / self.n_layers
 
         # build layers (each layer has its own EdgeFluxModule + ConservativeMPLayer)
         self.layers = nn.ModuleList()
         for _ in range(self.n_layers):
-            edge_mod = EdgeFluxModule(node_in_dim=5,
+            edge_mod = EdgeFluxModule(node_in_dim=node_in_dim,
                                       node_embed_dim=node_embed_dim,
-                                      edge_attr_dim=1,
+                                      edge_attr_dim=3,
                                       edge_embed_dim=32,
                                       phi_hidden=(node_embed_dim//2,),
                                       msg_hidden=(128,))
-            layer = ConservativeMPLayer(edge_module=edge_mod, dt_max=self.dt_max, init_s=-5.0)
+            layer = ConservativeMPLayer(edge_module=edge_mod)
             self.layers.append(layer)
 
     def _extract_initial_state(self, x):
@@ -512,13 +504,16 @@ class FluxGNN(nn.Module):
         U_conserved_start = torch.cat([rho0.unsqueeze(-1), e0.unsqueeze(-1), rhou0], dim=-1)
 
         # calculate dynamic CFL limit based on current state U
-        current_dt_cfl = self.compute_cfl_limit(U, data.edge_attr, stats)
+        cfl_limit = self.compute_cfl_limit(U, data.edge_attr, stats)
+
+        # dt_to_use = self.fixed_dt_per_layer
+        dt_to_use = min(self.fixed_dt_per_layer, cfl_limit.item())
 
         dt_layers = []
         # iterate conservative layers
         for layer in self.layers:
-            U, dt_val = layer(U, edge_index, edge_attr, self.gamma, stats, cell_area=None, dt_cfl=current_dt_cfl)
-            dt_layers.append(float(dt_val))
+            U, _ = layer(U, edge_index, edge_attr, self.gamma, stats, dt=dt_to_use, cell_area=None)
+            dt_layers.append(float(dt_to_use))
 
         # split conserved vars
         rho = U[:, 0]                    # (N,)
