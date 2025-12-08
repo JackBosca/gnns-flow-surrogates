@@ -244,8 +244,8 @@ def main():
                         help='Output video size: width height (pixels)')
     parser.add_argument('--skip', type=int, default=1, 
                         help='Render every `skip` timesteps.')
-    parser.add_argument('--codec', type=str, default='mp4v', 
-                        help='FourCC codec for cv2 VideoWriter (try avc1 for H.264)')
+    parser.add_argument('--codec', type=str, default='avc1', 
+                        help='FourCC codec for cv2 VideoWriter (default avc1 for H.264)')
     parser.add_argument('--write-frames', action='store_true', 
                         help='Also save each frame as PNG')
 
