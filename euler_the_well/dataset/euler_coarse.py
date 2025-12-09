@@ -244,8 +244,6 @@ class EulerPeriodicDataset(Dataset):
                                           self._static_cache.get("pos_template", None))
         if pos_template is None:
             raise RuntimeError("pos_template not found in cache (coarse or full).")
-    
-        pos_grid = pos_template.reshape(H, W, 2)  # pos_grid[i,j] = (x_j, y_i)
 
         # periodic flags
         x_periodic = bool(self._static_cache.get("x_periodic", False))
@@ -265,9 +263,13 @@ class EulerPeriodicDataset(Dataset):
         else:
             Ly = 1.0    # see: https://polymathic-ai.org/the_well/datasets/euler_multi_quadrants_periodicBC/
 
+        # calculate grid stride
+        cell_w = Lx / (W - 1) if W > 1 else 1.0 # Lx is (max - min), so the stride is Lx / (W - 1)
+        cell_h = Ly / (H - 1) if H > 1 else 1.0 # Ly is (max - min), so the stride is Ly / (H - 1)
+
         src_list = []
         dst_list = []
-        attr_list = []  # [dx, dy, r, wrap_flag]
+        attr_list = []  # [dx, dy, r]
 
         # neighbor offsets: north, south, west, east
         nbrs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -276,20 +278,17 @@ class EulerPeriodicDataset(Dataset):
         for i in range(H):
             for j in range(W):
                 a_id = i * W + j    # flattened index of node a (source)
-                pa = pos_grid[i, j]  # [x_a, y_a]
 
                 for di, dj in nbrs:
                     # compute candidate neighbor indices
                     ni = i + di
                     nj = j + dj
-                    wrapped = False
 
                     # handle y-axis (vertical) overflow
                     if ni < 0 or ni >= H:
                         if y_periodic:
                             # if periodic, wrap around: neighbor of node at top goes to bottom and vice versa
                             ni = ni % H
-                            wrapped = True
                         else:
                             continue  # skip neighbor outside domain for non-periodic
 
@@ -298,30 +297,20 @@ class EulerPeriodicDataset(Dataset):
                         if x_periodic:
                             # if periodic, wrap around: neighbor of node at left goes to right and vice versa
                             nj = nj % W
-                            wrapped = True
                         else:
                             continue
 
-                    # compute flattened index of valid neighbor node b (destination)
                     b_id = ni * W + nj
-                    pb = pos_grid[ni, nj]  # [x_b, y_b]
 
-                    # compute distance components
-                    dx_raw = float(pb[0] - pa[0])
-                    dy_raw = float(pb[1] - pa[1])
-
-                    # modular reduction to [-L/2, L/2] if periodic
-                    if x_periodic:
-                        dx = ((dx_raw + 0.5 * Lx) % Lx) - 0.5 * Lx
-                    else:
-                        dx = dx_raw
-
-                    if y_periodic:
-                        dy = ((dy_raw + 0.5 * Ly) % Ly) - 0.5 * Ly
-                    else:
-                        dy = dy_raw
-
-                    # Euclidean distance
+                    # direction-based distance
+                    # instead of subtracting positions (which gives 0.0 for periodic wraps),
+                    # calculate the vector based on the step direction (di, dj)
+                    # This guarantees that a wrap-around edge has a valid length and direction
+                    # (no r=0.0 edge attribute)
+                    dx = float(dj) * cell_w  # dj is -1, 0, or 1
+                    dy = float(di) * cell_h  # di is -1, 0, or 1
+                    
+                    # euclidean distance
                     r = (dx * dx + dy * dy) ** 0.5
 
                     src_list.append(a_id)
@@ -330,6 +319,7 @@ class EulerPeriodicDataset(Dataset):
 
         # convert to tensors and cache
         edge_index = torch.tensor([src_list, dst_list], dtype=torch.long) # shape (2, E)
+        # edge_index is built like [[src1, src1, src1, src1, src2, ...], [dst1_n, dst1_s, dst1_w, dst1_e, dst2_n, ...]]
         edge_attr = torch.tensor(attr_list, dtype=torch.float32) # shape (E, 3)
 
         self._static_cache[cache_key_idx] = edge_index
