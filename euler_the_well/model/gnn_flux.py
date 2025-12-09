@@ -168,10 +168,11 @@ class ConservativeMPLayer(nn.Module):
         super().__init__()
         self.edge_module = edge_module
 
-    def forward(self, node_u, edge_index, edge_attr, gamma, stats, dt, cell_area=None, dt_cfl=None):
+    def forward(self, node_state, node_feat, edge_index, edge_attr, gamma, stats, dt, cell_area=None, dt_cfl=None):
         """
         Args:
-            node_u: (N, 5) tensor [rho, e, p, rho_u_x, rho_u_y]
+            node_state: (N, 5) tensor [rho, e, p, rho_u_x, rho_u_y]
+            node_feat: (N, F) tensor of additional node features (time_window > 2)
             edge_index: (2, E) long tensor (directed edges, both directions present)
             edge_attr: (E, 3) float tensor [dx, dy, r] computed for the directed edge (src->dst)
             gamma: specific heat ratio (float)
@@ -183,8 +184,8 @@ class ConservativeMPLayer(nn.Module):
             node_u_new: (N,5) updated conserved variables
             diagnostics: dict with dt, optional flux norms
         """
-        device = node_u.device
-        N = node_u.shape[0]
+        device = node_state.device
+        N = node_state.shape[0]
  
         # take only edges with src < dst (one representative per undirected edge)
         src = edge_index[0]
@@ -194,8 +195,8 @@ class ConservativeMPLayer(nn.Module):
         dst_u = dst[mask] # (E_u,) = (E/2,)
         edge_attr_u = edge_attr[mask]   # (E_u, 3)
 
-        # call edge module to compute shared per-edge flux vectors
-        out = self.edge_module(node_u, torch.stack([src_u, dst_u], dim=0), edge_attr_u)
+        # call edge module to compute shared per-edge flux vectors (pass full history node_feat)
+        out = self.edge_module(node_feat, torch.stack([src_u, dst_u], dim=0), edge_attr_u)
 
         F_rho  = out["F_rho"]    # (E_u,2)
         F_e    = out["F_e"]      # (E_u,2)
@@ -228,13 +229,13 @@ class ConservativeMPLayer(nn.Module):
             # approximate uniform cell area -> cell_area = dx^2 with dx = mean(r_edge)
             dx_est = torch.mean(r_edge)
             area = float(dx_est.item() ** 2)
-            area_tensor = torch.full((N,), area, device=device, dtype=node_u.dtype)
+            area_tensor = torch.full((N,), area, device=device, dtype=node_state.dtype)
         else:
             if isinstance(cell_area, (float, int)):
                 # specified uniform area
-                area_tensor = torch.full((N,), float(cell_area), device=device, dtype=node_u.dtype)
+                area_tensor = torch.full((N,), float(cell_area), device=device, dtype=node_state.dtype)
             else:
-                area_tensor = cell_area.to(device=device, dtype=node_u.dtype)
+                area_tensor = cell_area.to(device=device, dtype=node_state.dtype)
                 if area_tensor.dim() == 0:
                     area_tensor = area_tensor.repeat(N)
 
@@ -261,9 +262,9 @@ class ConservativeMPLayer(nn.Module):
         contrib_m_dst   = - (dt * (-m_raw)) / area_tensor[dst_u].unsqueeze(-1)
 
         # aggregate into node deltas using index_add
-        delta_rho = torch.zeros((N,), device=device, dtype=node_u.dtype)
-        delta_e = torch.zeros((N,), device=device, dtype=node_u.dtype)
-        delta_rhou = torch.zeros((N, 2), device=device, dtype=node_u.dtype)
+        delta_rho = torch.zeros((N,), device=device, dtype=node_state.dtype)
+        delta_e = torch.zeros((N,), device=device, dtype=node_state.dtype)
+        delta_rhou = torch.zeros((N, 2), device=device, dtype=node_state.dtype)
 
         # accumulate src contributions
         delta_rho.index_add_(0, src_u, contrib_rho_src)
@@ -276,9 +277,9 @@ class ConservativeMPLayer(nn.Module):
         delta_rhou.index_add_(0, dst_u, contrib_m_dst)
 
         # construct updated conserved U: [rho, e, rhou_x, rhou_y]
-        rho = node_u[:, 0]
-        e = node_u[:, 1]
-        rhou = node_u[:, 3:5] # indexes shifted because p is at 2
+        rho = node_state[:, 0]
+        e = node_state[:, 1]
+        rhou = node_state[:, 3:5] # indexes shifted because p is at 2
 
         rho_new = rho + delta_rho
         e_new = e + delta_e
@@ -512,7 +513,14 @@ class FluxGNN(nn.Module):
         dt_layers = []
         # iterate conservative layers
         for layer in self.layers:
-            U, _ = layer(U, edge_index, edge_attr, self.gamma, stats, dt=dt_to_use, cell_area=None)
+            if self.node_in_dim == 5:
+                node_feat = U
+            else:
+                # history is present, pass features as x_nodes
+                node_feat = x_nodes
+
+            U, _ = layer(node_state=U, node_feat=node_feat, edge_index=edge_index, 
+                         edge_attr=edge_attr, gamma=self.gamma, stats=stats, dt=dt_to_use, cell_area=None)
             dt_layers.append(float(dt_to_use))
 
         # split conserved vars
