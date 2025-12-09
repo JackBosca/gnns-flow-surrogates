@@ -73,6 +73,9 @@ class EdgeFluxModule(nn.Module):
         # node encoder
         self.phi_node = MLP(node_in_dim, hidden_dims=phi_hidden, out_dim=node_embed_dim)
 
+        # embedding for residual connection to match node_embed_dim
+        self.input_proj = nn.Linear(node_in_dim, node_embed_dim)
+
         # symmetric phi -> must have same in/out dims
         # self.phi_symm = MLP(node_embed_dim, hidden_dims=(96,), out_dim=node_embed_dim)
 
@@ -102,6 +105,10 @@ class EdgeFluxModule(nn.Module):
 
         # node embeddings
         h = self.phi_node(node_u)                # (N, node_embed_dim)
+
+        # residual connection embedding
+        res = self.input_proj(node_u)            # (N, node_embed_dim)
+        h = h + res                             # (N, node_embed_dim)
 
         # gather per-edge node embeddings
         #NOTE: pytorch effectively "expands" node features h onto the edges. 
@@ -202,7 +209,8 @@ class EdgeFluxModule(nn.Module):
             "F_e": F_e_final,
             "F_rhou": F_rhou_final,
             "n": n,
-            "r": r.squeeze(-1)
+            "r": r.squeeze(-1),
+            "alpha": alpha.squeeze(-1)
         }
     
 
@@ -251,6 +259,9 @@ class ConservativeMPLayer(nn.Module):
         F_rhou = out["F_rhou"]   # (E_u,2)
         n      = out["n"]        # (E_u,2) unit normal (from src_u -> dst_u)
         r_edge = out["r"]        # (E_u,)
+        alpha = out["alpha"]  # (E_u,)
+
+        mean_alpha = alpha.mean()
 
         # face_length for 4-neighbour uniform grid equals r_edge
         face_length = r_edge     # (E_u,)
@@ -367,7 +378,7 @@ class ConservativeMPLayer(nn.Module):
                     rhou_new
                 ], dim=-1) # (N,5)
 
-        return node_u_new, dt
+        return node_u_new, dt, mean_alpha
 
 
 class FluxGNN(nn.Module):
@@ -558,36 +569,50 @@ class FluxGNN(nn.Module):
         # dt_to_use = self.fixed_dt_per_layer
         dt_to_use = min(self.fixed_dt_per_layer, cfl_limit.item())
 
+        current_U = U # state that will be integrated
+
         dt_layers = []
+        alpha_layers = []
+
         # iterate conservative layers
         for layer in self.layers:
             if self.node_in_dim == 5:
-                node_feat = U
+                node_feat = current_U
             else:
-                # history is present, pass features as x_nodes
-                node_feat = x_nodes
+                # need to take the static history from x_nodes
+                # and concatenate the UPDATED current state (current_U)
 
-            U, _ = layer(node_state=U, node_feat=node_feat, edge_index=edge_index, 
+                history_part = x_nodes[:, :-5] # static
+
+                # append the EVOLVING current state (current_U)
+                # current_U is (N, 5) and ALREADY NORMALIZED
+                node_feat = torch.cat([history_part, current_U], dim=-1)
+
+            current_U, _, mean_alpha = layer(node_state=current_U, node_feat=node_feat, edge_index=edge_index, 
                          edge_attr=edge_attr, gamma=self.gamma, stats=stats, dt=dt_to_use, cell_area=None)
             dt_layers.append(float(dt_to_use))
+            alpha_layers.append(mean_alpha)
+
+        global_mean_alpha = torch.stack(alpha_layers).mean()
 
         # split conserved vars
-        rho = U[:, 0]                    # (N,)
-        e = U[:, 1]                      # (N,)
-        p = U[:, 2]                      # (N,)
-        rhou = U[:, 3:5]                 # (N,2)
+        rho = current_U[:, 0]                    # (N,)
+        e = current_U[:, 1]                      # (N,)
+        p = current_U[:, 2]                      # (N,)
+        rhou = current_U[:, 3:5]                 # (N,2)
   
         # Final conserved vars
-        U_conserved_final = torch.cat([U[:, 0:2], U[:, 3:5]], dim=-1)
+        U_conserved_final = torch.cat([current_U[:, 0:2], current_U[:, 3:5]], dim=-1)
 
         output = {
             "U0": U_conserved_start,
-            "U_final": U,
+            "U_final": current_U,
             "delta_U": U_conserved_final - U_conserved_start,
             "density": rho,
             "energy": e,
             "pressure": p,
             "momentum": rhou,
-            "dt_layers": dt_layers
+            "dt_layers": dt_layers,
+            "mean_alpha": global_mean_alpha
         }
         return output
