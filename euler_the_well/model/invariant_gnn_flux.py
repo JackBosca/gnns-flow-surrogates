@@ -489,14 +489,14 @@ class FluxGNN(nn.Module):
                  node_embed_dim=64,
                  n_layers=4,
                  dataset_dt=0.015,
-                 gamma=1.4):
+                 gamma=None):
         super().__init__()
 
         self.node_in_dim = node_in_dim # > 5 if time_window>2
         self.node_embed_dim = node_embed_dim
         self.n_layers = int(n_layers)
         self.dataset_dt = float(dataset_dt)
-        self.gamma = float(gamma) if gamma is not None else None
+        # self.gamma = float(gamma) if gamma is not None else None
         
         # calculate the required step per layer
         self.fixed_dt_per_layer = self.dataset_dt / self.n_layers
@@ -554,7 +554,7 @@ class FluxGNN(nn.Module):
         
         return rho0, e0, p0, rhou0
 
-    def compute_cfl_limit(self, U, edge_attr, stats, cfl_factor=0.6):
+    def compute_cfl_limit(self, U, edge_attr, stats, gamma, cfl_factor=0.6):
         """
         Computes the maximum allowable dt based on the CFL condition.
         dt <= CFL * min( dx / (|u| + c) )
@@ -577,7 +577,7 @@ class FluxGNN(nn.Module):
             u_mag = torch.sqrt(u_sq)
 
             # c = sqrt(gamma * p / rho)
-            c_sq = (self.gamma * p) / rho
+            c_sq = (gamma * p) / rho
             c = torch.sqrt(torch.clamp(c_sq, min=1e-8))
 
             # max wave speed per node
@@ -616,6 +616,11 @@ class FluxGNN(nn.Module):
         device = data.x.device if isinstance(data.x, torch.Tensor) else torch.device("cpu")
         x_nodes = data.x.to(device)
 
+        # data.u is (Batch_Size, n_globals), where index 0 is gamma
+        # data.batch is (Total_Nodes,) mapping each node to its graph index
+        batch_idx = data.batch if hasattr(data, 'batch') and data.batch is not None else torch.zeros(data.x.size(0), dtype=torch.long, device=device)
+        gamma = data.u[batch_idx, 0] # Shape: (Total_Nodes,)
+
         edge_index = data.edge_index.to(device)
         edge_attr  = data.edge_attr.to(device)
 
@@ -642,7 +647,7 @@ class FluxGNN(nn.Module):
         rho0, e0, _, rhou0 = norm(rho_phys, e_phys, None, rhou_phys, stats)
         
         # recalculate p0 consistent with clamped variables
-        p_phys = eos(rho_phys, e_phys, rhou_phys, self.gamma)
+        p_phys = eos(rho_phys, e_phys, rhou_phys, gamma)
         _, _, p_norm, _ = norm(None, None, p_phys, None, stats)
         
         # this is the safe starting state
@@ -657,7 +662,7 @@ class FluxGNN(nn.Module):
         U_conserved_start = torch.cat([rho0.unsqueeze(-1), e0.unsqueeze(-1), rhou0], dim=-1)
 
         # calculate dynamic CFL limit based on current state U
-        cfl_limit = self.compute_cfl_limit(U, data.edge_attr, stats)
+        cfl_limit = self.compute_cfl_limit(U, data.edge_attr, stats, gamma=gamma, cfl_factor=0.6)
 
         # dt_to_use = self.fixed_dt_per_layer
         dt_to_use = min(self.fixed_dt_per_layer, cfl_limit.item())
@@ -689,7 +694,7 @@ class FluxGNN(nn.Module):
                 node_feat=node_feat, 
                 edge_index=edge_index, 
                 edge_attr=edge_attr, 
-                gamma=self.gamma, 
+                gamma=gamma, 
                 stats=stats, 
                 dt=dt_to_use, 
                 cell_area=None,
