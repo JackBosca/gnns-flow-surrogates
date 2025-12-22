@@ -680,13 +680,31 @@ class FluxGNN(nn.Module):
             if self.node_in_dim == 5:
                 node_feat = current_U
             else:
-                # need to take the static history from x_nodes
-                # and concatenate the UPDATED current state (current_U)
+                # identify indices of the "last" timestep in the input block
+                C_total = x_nodes.shape[1]
+                T_in = C_total // 5
+                
+                # mask of all features
+                mask = torch.ones(C_total, dtype=torch.bool, device=x_nodes.device)
+                
+                # indices of the "last" step (U0) which model needs to evolve
+                rho_idx = T_in - 1
+                e_idx   = (2 * T_in) - 1
+                p_idx   = (3 * T_in) - 1
+                mx_idx  = (3 * T_in) + 2 * (T_in - 1)
+                my_idx  = mx_idx + 1
+                
+                # remove these indices from the history
+                mask[rho_idx] = False
+                mask[e_idx]   = False
+                mask[p_idx]   = False
+                mask[mx_idx]  = False
+                mask[my_idx]  = False
+                
+                # select only true history (past < t)
+                history_part = x_nodes[:, mask]
 
-                history_part = x_nodes[:, :-5] # static
-
-                # append the EVOLVING current state (current_U)
-                # current_U is (N, 5) and ALREADY NORMALIZED
+                # concatenate with EVOLVING current state
                 node_feat = torch.cat([history_part, current_U], dim=-1)
 
             current_U, _, mean_alpha, current_edge_memory = layer(
