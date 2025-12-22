@@ -446,22 +446,11 @@ def evaluate_one_step(
         with torch.no_grad():
             out = model(data, stats)
 
-        p_density = out["density"].detach().cpu().numpy().reshape(Hc, Wc)
-        p_energy  = out["energy"].detach().cpu().numpy().reshape(Hc, Wc)
-        p_pressure= out["pressure"].detach().cpu().numpy().reshape(Hc, Wc)
-        p_momentum= out["momentum"].detach().cpu().numpy().reshape(Hc, Wc, 2)
-
-        # convert model outputs to predicted last (normalized space if dataset.normalize)
-        if dataset.target == "delta":
-            pred_last_density  = density[0]  + p_density
-            pred_last_energy   = energy[0]   + p_energy
-            pred_last_pressure = pressure[0] + p_pressure
-            pred_last_momentum = momentum[0] + p_momentum
-        else:
-            pred_last_density  = p_density
-            pred_last_energy   = p_energy
-            pred_last_pressure = p_pressure
-            pred_last_momentum = p_momentum
+        # FluxGNN returns absolute U_final regardless of dataset.target setting
+        pred_last_density  = out["density"].detach().cpu().numpy().reshape(Hc, Wc)
+        pred_last_energy   = out["energy"].detach().cpu().numpy().reshape(Hc, Wc)
+        pred_last_pressure = out["pressure"].detach().cpu().numpy().reshape(Hc, Wc)
+        pred_last_momentum = out["momentum"].detach().cpu().numpy().reshape(Hc, Wc, 2)
 
         timesteps.append(predicted_t)
 
@@ -586,15 +575,15 @@ if __name__ == "__main__":
     # from model.memory_gnn_flux import FluxGNN
     # from model.memory_invariant_gnn_flux import FluxGNN
     # from model.memory_invariant_hll_gnn_flux import FluxGNN
-    from model.invariant_gnn_flux import FluxGNN
-    # from model.invariant_upwind_gnn_flux import FluxGNN
+    # from model.invariant_gnn_flux import FluxGNN
+    from model.invariant_upwind_gnn_flux import FluxGNN
     # from model.invariant_hll_gnn_flux import FluxGNN
 
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
-    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.76_Ar_-180.hdf5"
-    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.13_C3H8_16.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.13_C3H8_16.hdf5"
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     time_window = 2
@@ -630,7 +619,7 @@ if __name__ == "__main__":
                     )
  
     # --- robust model loader ---
-    checkpoint_path = "./checkpoints/INVARIANT_NOALPHACLIP_UNROLL_model_flux_n-datasets_1_forcing_1.0_time-window_11_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_1.pt"
+    checkpoint_path = "./checkpoints/INVARIANT_NOALPHACLIP_UPWIND_model_flux_n-datasets_1_forcing_1.0_time-window_2_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_8.pt"
 
     # 1) load the file (map to cpu first)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
@@ -659,11 +648,12 @@ if __name__ == "__main__":
  
     sim_idx = 0
     t_idx = 0
-    save_path = f"./rollouts/TEST.npz"
+    # save_path = f"./rollouts/TEST.npz"
+    save_path = f"./rollouts_1-step/TEST.npz"
     # save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_valid.npz"
 
     # perform rollout of first sim starting from t=0
-    rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
-    # evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    # rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
 
     print("Rollout done.")
