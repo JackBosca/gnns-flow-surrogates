@@ -132,8 +132,11 @@ class EdgeFluxModule(nn.Module):
         # (h_src - h_dst)^2 is strictly symmetric
         v_diff = (h_src - h_dst).pow(2) # (E, node_embed_dim)
 
-        # by providing dx, dy, the net knows the orientation of the face
-        eps = self.phi_edge(edge_attr)           # (E, edge_embed_dim)
+        # 2.1) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
+        # |h_src - h_dst| is strictly symmetric (shock sensor)
+        # v_diff = torch.abs(h_src - h_dst) # (E, node_embed_dim)
+
+        eps = self.phi_edge(edge_attr)
 
         # message latent: [source, destination, average state, gradient info, geometry]
         msg_in = torch.cat([h_src, h_dst, v_avg, v_diff, eps], dim=-1)     # (E, 4*node_embed_dim + edge_embed_dim)
@@ -160,6 +163,9 @@ class EdgeFluxModule(nn.Module):
 
         # diffusion coefficient (artificial viscosity) shared among quantities
         alpha = torch.sigmoid(self.psi_visc(m_ij).squeeze(-1)).unsqueeze(-1)  # (E,1), in [0,1]
+
+        MAX_ALPHA = 0.15
+        alpha = alpha * MAX_ALPHA
 
         # # density scale
         # scale_rho = 1.0 + torch.abs(a_rho).unsqueeze(-1).detach()
