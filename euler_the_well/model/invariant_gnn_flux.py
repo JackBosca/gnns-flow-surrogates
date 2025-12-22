@@ -200,11 +200,11 @@ class EdgeFluxModule(nn.Module):
 
         # 2) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
         # (h_src - h_dst)^2 is strictly symmetric
-        # v_diff = (h_src - h_dst).pow(2) # (E, node_embed_dim)
+        v_diff = (h_src - h_dst).pow(2) # (E, node_embed_dim)
 
         # 2.1) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
         # |h_src - h_dst| is strictly symmetric (shock sensor)
-        v_diff = torch.abs(h_src - h_dst) # (E, node_embed_dim)
+        # v_diff = torch.abs(h_src - h_dst) # (E, node_embed_dim)
 
         # --- MODIFICATION START: Symmetric Edge Encoding ---
         # Only use 'r' for the geometry embedding. 
@@ -215,34 +215,13 @@ class EdgeFluxModule(nn.Module):
         msg_in = torch.cat([h_src, h_dst, v_avg, v_diff, eps, vel_proj], dim=-1) 
         # --- MODIFICATION END ---
 
-        # # ---------------------------------------------------------------------------
-        # # # by providing dx, dy, the net knows the orientation of the face
-        # # eps = self.phi_edge(edge_attr)           # (E, edge_embed_dim)
-
-        # # Good: Symmetric, but preserves X vs Y distinction
-        # dx = edge_attr[:, 0]
-        # dy = edge_attr[:, 1]
-        # r  = edge_attr[:, 2]
-
-        # # Compute absolute normals (or just binary flags on uniform grid)
-        # nx_abs = torch.abs(dx) / (r + 1e-8)
-        # ny_abs = torch.abs(dy) / (r + 1e-8)
-
-        # # Input purely symmetric geometric features
-        # # The network knows orientation (X vs Y) but not direction (Left vs Right)
-        # # eps = self.phi_edge(torch.stack([nx_abs, ny_abs, r], dim=-1))
-        # eps = self.phi_edge(edge_attr)
-        # # ---------------------------------------------------------------------------
-
-        # # message latent: [source, destination, average state, gradient info, geometry]
-        # msg_in = torch.cat([h_src, h_dst, v_avg, v_diff, eps], dim=-1)     # (E, 4*node_embed_dim + edge_embed_dim)
-
         m_ij = self.phi_msg(msg_in)              # (E, node_embed_dim)
 
         # Edge Memory Logic
         if edge_memory is not None:
             # Apply Residual + LayerNorm: LayerNorm(New + Old)
             m_ij = self.memory_norm(m_ij + edge_memory)
+            # pass
 
         # flux amplitudes
         a_rho = self.psi_rho(m_ij).squeeze(-1)   # (E,)
@@ -266,8 +245,8 @@ class EdgeFluxModule(nn.Module):
         # diffusion coefficient (artificial viscosity) shared among quantities
         alpha = torch.sigmoid(self.psi_visc(m_ij).squeeze(-1)).unsqueeze(-1)  # (E,1), in [0,1]
 
-        MAX_ALPHA = 0.15
-        alpha = alpha * MAX_ALPHA
+        # MAX_ALPHA = 0.15
+        # alpha = alpha * MAX_ALPHA
 
         # # density scale
         # scale_rho = 1.0 + torch.abs(a_rho).unsqueeze(-1).detach()
@@ -468,13 +447,13 @@ class ConservativeMPLayer(nn.Module):
         rho_phys = torch.clamp(rho_phys, min=eps)
         e_phys   = torch.clamp(e_phys, min=eps)
 
-        # VELOCITY CAP (prevent infinite speed explosion)
-        u_vec = rhou_phys / rho_phys.unsqueeze(-1)
-        u_mag = torch.norm(u_vec, dim=-1)
+        # # VELOCITY CAP (prevent infinite speed explosion)
+        # u_vec = rhou_phys / rho_phys.unsqueeze(-1)
+        # u_mag = torch.norm(u_vec, dim=-1)
         
-        MAX_VEL = 100.0  # safe cap
-        scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
-        rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
+        # MAX_VEL = 100.0  # safe cap
+        # scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
+        # rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
 
         # 3) re-normalize back
         rho_new, e_new, _, rhou_new = norm(rho_phys, e_phys, None, rhou_phys, stats)
@@ -652,12 +631,12 @@ class FluxGNN(nn.Module):
         rho_phys = torch.clamp(rho_phys, min=eps)
         e_phys   = torch.clamp(e_phys, min=eps)
         
-        # VELOCITY CAP
-        u_vec = rhou_phys / rho_phys.unsqueeze(-1)
-        u_mag = torch.norm(u_vec, dim=-1)
-        MAX_VEL = 100.0 
-        scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
-        rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
+        # # VELOCITY CAP
+        # u_vec = rhou_phys / rho_phys.unsqueeze(-1)
+        # u_mag = torch.norm(u_vec, dim=-1)
+        # MAX_VEL = 100.0 
+        # scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
+        # rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
 
         # renorm
         rho0, e0, _, rhou0 = norm(rho_phys, e_phys, None, rhou_phys, stats)
