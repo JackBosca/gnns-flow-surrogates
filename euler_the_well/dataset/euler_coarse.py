@@ -490,11 +490,11 @@ class EulerPeriodicDataset(Dataset):
 
         # compute target depending on "delta" or "absolute"
         if self.target == "delta":
-            # target = difference between last step and first step
-            y_density  = density[-1]  - density[0]
-            y_energy   = energy[-1]   - energy[0]
-            y_pressure = pressure[-1] - pressure[0]
-            y_momentum = momentum[-1] - momentum[0]
+            # target = difference between last step and second last step
+            y_density  = density[-1] - density[-2]
+            y_energy   = energy[-1] - energy[-2]
+            y_pressure = pressure[-1] - pressure[-2]
+            y_momentum = momentum[-1] - momentum[-2]
         else:  # "absolute"
             y_density  = density[-1]
             y_energy   = energy[-1]
