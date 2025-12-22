@@ -7,9 +7,17 @@ import torch.nn.functional as F
 from torch.utils.data import ConcatDataset
 from torch_geometric.loader import DataLoader
 from dataset.euler_coarse import EulerPeriodicDataset
-from model.visc_gnn_flux import FluxGNN
+# from model.visc_gnn_flux import FluxGNN
+# from model.memory_gnn_flux import FluxGNN
+# from model.memory_invariant_gnn_flux import FluxGNN
+from model.invariant_gnn_flux import FluxGNN
+# from model.invariant_upwind_gnn_flux import FluxGNN
+# from model.invariant_hll_gnn_flux import FluxGNN
+# from model.invariant_rusanov_gnn_flux import FluxGNN
+# from model.memory_invariant_hll_gnn_flux import FluxGNN
 from rollout import rollout_one_simulation
 from utils import teacher_forcing_schedule, autoregressive_pred
+from utils_flux import train_one_epoch_unrolled
 
 
 def train_one_epoch(model, dataloader, stats, optimizer, device,
@@ -109,7 +117,10 @@ def train_one_epoch(model, dataloader, stats, optimizer, device,
         if dt_used < (dt_target * 0.99):
             print(f"⚠️ CLIPPING DETECTED: Model evolved {dt_used:.5f}s, target {dt_target:.5f}s")
 
-        current_alpha = preds["mean_alpha"].item()
+        current_alpha = preds["mean_alpha"]
+
+        # add a penalty term
+        # viscosity_penalty = 0.05 * current_alpha # 0.1 is the weight
 
         if target_type == "delta":
             # FluxGNN returns 'delta_U' shape (N, 4) -> [rho, e, rhou_x, rhou_y]
@@ -149,6 +160,9 @@ def train_one_epoch(model, dataloader, stats, optimizer, device,
             + loss_weights.get("momentum") * mse_momentum
         )
 
+        # add viscosity penalty
+        # loss = loss + viscosity_penalty
+
         if not torch.isfinite(loss): # check for Inf/NaN
             print(f"\n⚠️ Non-finite loss (Inf/NaN) at step {step+1}: {loss.item()}. Skipping batch.")
             optimizer.zero_grad() 
@@ -180,7 +194,7 @@ def train_one_epoch(model, dataloader, stats, optimizer, device,
               f"Energy MSE: {mse_energy.item():.6f}, "
               f"Pressure MSE: {mse_pressure.item():.6f}, "
               f"Momentum MSE: {mse_momentum.item():.6f})")
-        print(f"Current Alpha: {current_alpha:.6f}")
+        print(f"Current Alpha: {current_alpha.item():.6f}")
         
         batch_losses.append(loss.item())
 
@@ -234,10 +248,15 @@ def train(model, train_loader, stats, valid_dataset=None, optimizer=None, device
             teacher_forcing_prob = teacher_forcing_schedule(epoch, epochs, start=teacher_forcing_start, end=0.0)
         else:
             teacher_forcing_prob = 1.0  # always teacher force
+
         # train for one epoch
         results = train_one_epoch(model, train_loader, stats, optimizer, device, loss_weights={"density": 1.0, "energy": 1.0, "pressure": 1.0, "momentum": 5.0},
                                 teacher_forcing_prob=teacher_forcing_prob, clip_grad=clip_grad,
                                 noise_std=0.01)
+        # results = train_one_epoch_unrolled(model, train_loader, stats, optimizer, device,
+        #                                 loss_weights={"density": 1.0, "energy": 1.0, "pressure": 1.0, "momentum": 5.0},
+        #                                 clip_grad=clip_grad,
+        #                                 noise_std=0.01, n_unroll_steps=5)
         
         print(f"Epoch {epoch}/{epochs} - Train Loss: {results['loss']:.6f}")
         
@@ -376,14 +395,17 @@ if __name__ == "__main__":
         except Exception:
             gamma_val = None
 
+    print(f"Using gamma: {gamma_val}")
+
     n_layers=12
 
     # instantiate FluxGNN
-    model = FluxGNN(node_in_dim=(time_window - 1)*5,
+    model = FluxGNN(node_in_dim=5,
                     node_embed_dim=64,
                     n_layers=n_layers,
                     dataset_dt=0.015,
-                    gamma=(gamma_val if gamma_val is not None else 1.4))
+                    # gamma=(gamma_val if gamma_val is not None else 1.4),
+                    )
 
     # use AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
@@ -391,8 +413,8 @@ if __name__ == "__main__":
     # teacher forcing start value
     teacher_forcing_start = 1.0
 
-    fname = f"NOMIXEDTRAIN_RES_model_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
-    floss = f"NOMIXEDTRAIN_RES_loss_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
+    fname = f"INVARIANT_249_model_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
+    floss = f"INVARIANT_249_loss_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
 
     # train the model
     train(model, train_loader, stats, valid_dataset=None, optimizer=optimizer,

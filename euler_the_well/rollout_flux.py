@@ -444,7 +444,7 @@ def evaluate_one_step(
         data = dataset._arrays_to_graph(x_np, y_density_true, y_energy_true, y_pressure_true, y_momentum_true, time_step=time_scalar)
         data = data.to(device)
         with torch.no_grad():
-            out = model(data)
+            out = model(data, stats)
 
         p_density = out["density"].detach().cpu().numpy().reshape(Hc, Wc)
         p_energy  = out["energy"].detach().cpu().numpy().reshape(Hc, Wc)
@@ -582,11 +582,19 @@ def evaluate_one_step(
 
 if __name__ == "__main__":
     from dataset.euler_coarse import EulerPeriodicDataset
-    from model.visc_gnn_flux import FluxGNN
+    # from model.visc_gnn_flux import FluxGNN
+    # from model.memory_gnn_flux import FluxGNN
+    # from model.memory_invariant_gnn_flux import FluxGNN
+    # from model.memory_invariant_hll_gnn_flux import FluxGNN
+    from model.invariant_gnn_flux import FluxGNN
+    # from model.invariant_upwind_gnn_flux import FluxGNN
+    # from model.invariant_hll_gnn_flux import FluxGNN
 
-    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
-    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.76_Ar_-180.hdf5"
+    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.13_C3H8_16.hdf5"
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     time_window = 2
@@ -618,10 +626,11 @@ if __name__ == "__main__":
                     node_embed_dim=64,
                     n_layers=12,
                     dataset_dt=0.015,
-                    gamma=(gamma_val if gamma_val is not None else 1.4))
+                    # gamma=(gamma_val if gamma_val is not None else 1.4),
+                    )
  
     # --- robust model loader ---
-    checkpoint_path = "./checkpoints/NOISE001VISCMOMLOSS5_RES_model_flux_n-datasets_1_forcing_1.0_time-window_5_coarsen_2-2_target_delta_centroids_True_layers_20_epoch_3.pt"
+    checkpoint_path = "./checkpoints/INVARIANT_NOALPHACLIP_UNROLL_model_flux_n-datasets_1_forcing_1.0_time-window_11_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_1.pt"
 
     # 1) load the file (map to cpu first)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
