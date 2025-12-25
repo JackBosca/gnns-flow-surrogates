@@ -164,8 +164,8 @@ class EdgeFluxModule(nn.Module):
         # diffusion coefficient (artificial viscosity) shared among quantities
         alpha = torch.sigmoid(self.psi_visc(m_ij).squeeze(-1)).unsqueeze(-1)  # (E,1), in [0,1]
 
-        MAX_ALPHA = 0.15
-        alpha = alpha * MAX_ALPHA
+        # MAX_ALPHA = 0.15
+        # alpha = alpha * MAX_ALPHA
 
         # # density scale
         # scale_rho = 1.0 + torch.abs(a_rho).unsqueeze(-1).detach()
