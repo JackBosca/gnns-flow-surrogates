@@ -24,7 +24,7 @@ def train_one_epoch(model, dataloader, stats, optimizer, device,
                     loss_weights: Optional[Dict[str, float]] = None,
                     clip_grad: Optional[float] = None,
                     teacher_forcing_prob: float = 1.0,
-                    noise_std: float = 0.01):
+                    noise_std: float = 0.015):
     """
     Args:
         model: model returning dict with keys "density","energy","pressure","momentum".
@@ -250,13 +250,13 @@ def train(model, train_loader, stats, valid_dataset=None, optimizer=None, device
             teacher_forcing_prob = 1.0  # always teacher force
 
         # train for one epoch
-        results = train_one_epoch(model, train_loader, stats, optimizer, device, loss_weights={"density": 1.0, "energy": 1.0, "pressure": 1.0, "momentum": 5.0},
-                                teacher_forcing_prob=teacher_forcing_prob, clip_grad=clip_grad,
-                                noise_std=0.01)
-        # results = train_one_epoch_unrolled(model, train_loader, stats, optimizer, device,
-        #                                 loss_weights={"density": 1.0, "energy": 1.0, "pressure": 1.0, "momentum": 5.0},
-        #                                 clip_grad=clip_grad,
-        #                                 noise_std=0.01, n_unroll_steps=5)
+        # results = train_one_epoch(model, train_loader, stats, optimizer, device, loss_weights={"density": 1.0, "energy": 1.0, "pressure": 1.0, "momentum": 5.0},
+        #                         teacher_forcing_prob=teacher_forcing_prob, clip_grad=clip_grad,
+        #                         noise_std=0.015)
+        results = train_one_epoch_unrolled(model, train_loader, stats, optimizer, device,
+                                        loss_weights={"density": 1.0, "energy": 1.0, "pressure": 1.0, "momentum": 5.0},
+                                        clip_grad=clip_grad,
+                                        noise_std=0.015, n_unroll_steps=5)
         
         print(f"Epoch {epoch}/{epochs} - Train Loss: {results['loss']:.6f}")
         
@@ -332,7 +332,8 @@ def train(model, train_loader, stats, valid_dataset=None, optimizer=None, device
 
 if __name__ == "__main__":
     # h5 files path
-    h5_paths_train = ["/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5",
+    h5_paths_train = [
+                    #   "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5",
                     #   "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.33_H2O_20.hdf5",
                       "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
                       ]
@@ -341,7 +342,7 @@ if __name__ == "__main__":
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     # create dataset and dataloader
-    time_window = 2
+    time_window = 7
     coarsen = (4,4)
     target = "delta" # "delta" or "absolute"
     to_centroids = True
@@ -413,12 +414,12 @@ if __name__ == "__main__":
     # teacher forcing start value
     teacher_forcing_start = 1.0
 
-    fname = f"INVARIANT_249_model_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
-    floss = f"INVARIANT_249_loss_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
+    fname = f"Dry_air_20_5UNROLLED_model_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
+    floss = f"Dry_air_20_5UNROLLED_loss_flux_n-datasets_{len(h5_paths_train)}_forcing_{teacher_forcing_start}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_centroids_{to_centroids}_layers_{n_layers}"
 
     # train the model
     train(model, train_loader, stats, valid_dataset=None, optimizer=optimizer,
-          epochs=10, fname=fname, floss=floss, mixed_train=False,
+          epochs=30, fname=fname, floss=floss, mixed_train=False,
           teacher_forcing_start=teacher_forcing_start, clip_grad=1.0)
 
     print("Training complete.")

@@ -575,15 +575,20 @@ if __name__ == "__main__":
     # from model.memory_gnn_flux import FluxGNN
     # from model.memory_invariant_gnn_flux import FluxGNN
     # from model.memory_invariant_hll_gnn_flux import FluxGNN
-    # from model.invariant_gnn_flux import FluxGNN
-    from model.invariant_upwind_gnn_flux import FluxGNN
+    from model.invariant_gnn_flux import FluxGNN
+    # from model.invariant_upwind_gnn_flux import FluxGNN
     # from model.invariant_hll_gnn_flux import FluxGNN
 
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
-    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.453_H2_-76.hdf5"
+    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.597_H2_-181.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.76_Ar_-180.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.13_C3H8_16.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.404_H2_100_Dry_air_-15.hdf5"
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
 
     time_window = 2
@@ -611,7 +616,7 @@ if __name__ == "__main__":
             gamma_val = None
 
     # instantiate FluxGNN
-    model = FluxGNN(node_in_dim=(time_window-1)*5,
+    model = FluxGNN(node_in_dim=5,
                     node_embed_dim=64,
                     n_layers=12,
                     dataset_dt=0.015,
@@ -619,7 +624,7 @@ if __name__ == "__main__":
                     )
  
     # --- robust model loader ---
-    checkpoint_path = "./checkpoints/INVARIANT_NOALPHACLIP_UPWIND_model_flux_n-datasets_1_forcing_1.0_time-window_2_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_8.pt"
+    checkpoint_path = "./checkpoints/Dry_air_20_5UNROLLED_model_flux_n-datasets_1_forcing_1.0_time-window_7_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_7.pt"
 
     # 1) load the file (map to cpu first)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
@@ -645,8 +650,8 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
     model.eval()
- 
-    sim_idx = 0
+    
+    sim_idx = 15
     t_idx = 0
     # save_path = f"./rollouts/TEST.npz"
     save_path = f"./rollouts_1-step/TEST.npz"
