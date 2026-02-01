@@ -39,14 +39,6 @@ def copy_geometric_data(graph):
 def get_velocity_noise(graph, noise_std, device):
     '''
     Generates Gaussian noise to perturb node velocities during training.
-
-    This implements noise injection, a technique used in MeshGraphNets to
-    improve rollout stability. At inference, the model relies on its own
-    past predictions instead of ground-truth velocities, which introduces
-    small errors that can accumulate over time. Adding noise during training
-    simulates these prediction errors so the model learns to correct them,
-    leading to more stable long-term predictions.
-
     Noise is applied only to fluid nodes (NodeType.NORMAL), while boundary
     and obstacle nodes remain unperturbed to respect physical constraints.
 
@@ -59,7 +51,7 @@ def get_velocity_noise(graph, noise_std, device):
         torch.Tensor: Noise tensor of shape (num_nodes, 2), zeroed for
                       non-fluid nodes.
     '''
-    velocity_sequence = graph.x[:, 1:3]   # node velocities (2D)
+    velocity_sequence = graph.x[:, 1:3]   # node velociies (2D)
     type = graph.x[:, 0]                  # node type (scalar, e.g. boundary vs fluid)
     
     # sample Gaussian noise of same shape as velocities

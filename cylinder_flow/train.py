@@ -99,7 +99,6 @@ def train(
 
             global_step += 1
 
-        # end of epoch reporting
         if steps_per_epoch is not None:
             # take the last `steps_per_epoch` losses to compute epoch mean
             epoch_slice = losses[-steps_per_epoch:]
@@ -149,10 +148,8 @@ if __name__ == '__main__':
     parser.add_argument('--save-dir', type=str, default="checkpoint", help="Directory to save model and losses")
     args = parser.parse_args()
 
-    # ----- device -----
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # ----- model & optimizer -----
     simulator = Simulator(message_passing_num=15, 
         node_input_size=11, 
         edge_input_size=3, 
@@ -163,10 +160,8 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(simulator.parameters(), lr=1e-4)
     print('Optimizer initialized')
 
-    # ----- transforms -----
     transformer = T.Compose([T.FaceToEdge(), T.Cartesian(norm=False), T.Distance(norm=False)])
 
-    # ----- dataset & loader -----
     dataset_cylinder = IndexedTrajectoryDataset(
         dataset_dir=args.dataset_dir,
         split='train',
@@ -196,7 +191,6 @@ if __name__ == '__main__':
         persistent_workers=True,
     )
 
-    # ----- start training -----
     train(
         model=simulator,
         dataset_dir=args.dataset_dir,

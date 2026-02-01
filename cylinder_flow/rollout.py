@@ -1,8 +1,5 @@
 """
 Rollout script for MeshGraphNets architecture for the flow past a cylinder problem.
-
-Usage example:
-    python rollout.py --dataset_dir /path/to/data --test_split test --rollout_num 3 --model_dir checkpoint/simulator.pth --gpu 0
 """
 import os
 import argparse
