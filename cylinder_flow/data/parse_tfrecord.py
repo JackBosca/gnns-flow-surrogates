@@ -67,8 +67,8 @@ def load_dataset(path, split):
 
 if __name__ == '__main__':
     # Change here to your dataset and output paths
-    tf_datasetPath='/work/scitas-share/boscario/cylinder_flow'
-    out_dir = '/work/scitas-share/boscario/cylinder_flow_h5'
+    tf_datasetPath='/work/imos/cylinder_flow'
+    out_dir = '/work/imos/cylinder_flow_h5'
     os.makedirs(out_dir, exist_ok=True)
 
     for split in ['train', 'test', 'valid']:

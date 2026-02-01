@@ -46,7 +46,7 @@ class IndexedTrajectoryDataset(Dataset):
         self.cache_static = bool(cache_static)
         self.preserve_one_hot = bool(preserve_one_hot)
 
-        # allow passing a PyG transform (e.g. T.Compose([...]))
+        # allow passing a PyG transform
         self.transform = transform
 
         # lazy HDF5 file handle per-process
@@ -70,7 +70,7 @@ class IndexedTrajectoryDataset(Dataset):
                 if usable == 0:
                     continue
 
-                # inspect shapes to determine time-varying vs static datasets
+                # inspect shapes to determine time-varying vs static dtasets
                 def _ds_info(name):
                     ds = grp[name]
                     return tuple(ds.shape), ds.ndim
@@ -121,11 +121,8 @@ class IndexedTrajectoryDataset(Dataset):
             self._h5 = None
 
     def __getstate__(self):
-        # don't pickle the h5py file handle (unsafe). keep the path & metadata.
         state = self.__dict__.copy()
         state['_h5'] = None
-        # don't pickle static cache unless you want that duplicated across workers
-        # (we can choose to keep it, but safer to rebuild per-process)
         state['_static_cache'] = {}
         return state
 
@@ -205,7 +202,7 @@ class IndexedTrajectoryDataset(Dataset):
             else:
                 raise ValueError(f"Unhandled node_type shape {a.shape} for N={N}")
 
-        # if user wants scalar label and input is one-hot/multi-channel -> argmax
+        # if scalar label and input is one-hot/multi-channel -> argmax
         if not self.preserve_one_hot and out.ndim == 2 and out.shape[1] > 1:
             # argmax returns shape (N,), convert to (N,1)
             labels = np.argmax(out, axis=1).reshape(N, 1)
@@ -304,8 +301,6 @@ class IndexedTrajectoryDataset(Dataset):
                 # truly time-varying: return requested frame
                 return ds[t]
 
-        # -- other dims (unexpected) --
-        # fallback: read everything (rare)
         arr = ds[()]
         if self.cache_static:
             self._static_cache.setdefault(traj_key, {})[name] = arr
@@ -429,7 +424,6 @@ class IndexedTrajectoryDataset(Dataset):
         
         data = self._datas_to_graph(pos, node_type, vel_t, vel_tp1, cells, press_t, time_scalar)
 
-        # ---- apply transform (if any) and optionally cache edge_index/edge_attr ----
         # only cache edge_index/edge_attr (transform outputs) per trajectory when cache_static=True
         if self.transform is not None:
             traj_key = self.traj_keys[traj_pos]
@@ -457,8 +451,7 @@ class IndexedTrajectoryDataset(Dataset):
                     traj_cache.setdefault('cells', cells)
                     traj_cache.setdefault('node_type', node_type)
         
-        # ensure 'face' attribute is always present so DataLoader batching is consistent
-        # face may be None if transform removed it
+        # ensure 'face' attribute is always present so DataLoader batching is consisten
         # `cells` is the array loaded earlier in this __getitem__ (n_faces x 3 or 3 x n_faces)
         if not hasattr(data, 'face') or data.face is None:
             try:
@@ -475,7 +468,6 @@ class IndexedTrajectoryDataset(Dataset):
                         face_t = torch.as_tensor(cells_arr.T, dtype=torch.long)
                     data.face = face_t
             except Exception as e:
-                # don't crash dataset on weird cells; just warn and continue
                 import warnings
                 warnings.warn(f"Could not attach face attribute in dataset __getitem__: {e}")
 

@@ -1,8 +1,6 @@
 """
 Encode-process-decode GNN for 2D cylinder-flow velocity updates.
 
-## Key components
-
 * Encoder: MLPs map raw node/edge features -> latent H.
 * Processor: K x (EdgeBlock -> NodeBlock) message-passing layers with
   residuals. Each layer keeps node/edge size = H.
@@ -28,10 +26,6 @@ Encode-process-decode GNN for 2D cylinder-flow velocity updates.
    * agg = sum(edge_attr' for edges with receiver j)  # -> [H]
    * collected = [x[j], agg]                          # -> [2H]
    * x'[j] = node_mlp(collected)                      # -> [H]
-
-3. Residuals: x <- x + x', edge_attr <- edge_attr + edge_attr'
-
-## Shapes summary
 
 * N: nodes, E: edges, H: hidden_size
 * Raw: x [N, Din], edge_attr [E, Dein]
