@@ -1,3 +1,8 @@
+"""
+This code implements the Euler dataset class with a patching strategy instead of a grid-coarsening one.
+This code was never used for training and evaluating models in the final results.
+"""
+
 import atexit
 from pathlib import Path
 import numpy as np

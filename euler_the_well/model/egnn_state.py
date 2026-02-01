@@ -1,3 +1,11 @@
+"""
+EGNN-based model to predict (density, energy, pressure, momentum_x, momentum_y) per node.
+Wrapper around EGNN_Sparse_Network from egnn_pytorch.
+
+NOTE: this model was used when first approaching the Euler equations dataset but was eventually discarded
+in favor of the final Flux Conservative GNN model explained in the report.
+"""
+
 import torch
 import torch.nn as nn
 from egnn_pytorch import EGNN_Sparse_Network

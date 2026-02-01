@@ -1,6 +1,9 @@
+"""
+Flux Conservative GNN model for 2D Euler equations.
+"""
+
 import torch
 import torch.nn as nn
-# from model_utils import denorm, norm, eos
 from utils import denorm, norm, eos
 
 class MLP(nn.Module):
@@ -76,28 +79,15 @@ class EdgeFluxModule(nn.Module):
         # embedding for residual connection to match node_embed_dim
         self.input_proj = nn.Linear(node_in_dim, node_embed_dim)
 
-        # --- MODIFICATION START ---
-        # edge encoder: NOW TAKES ONLY 1 DIMENSION (r) instead of 3 (dx, dy, r)
+        # edge encoder: TAKES ONLY 1 DIMENSION (r)
         self.phi_edge = MLP(edge_attr_dim, hidden_dims=[edge_embed_dim], out_dim=edge_embed_dim)
 
         # message network inputs:
         # h_src (D) + h_dst (D) + v_avg (D) + v_diff (D) + eps (E_dim) 
-        # + 4 NEW SCALARS: [u_n_src, u_t_src, u_n_dst, u_t_dst]
+        # + 4 SCALARS: [u_n_src, u_t_src, u_n_dst, u_t_dst]
         self.phi_msg = MLP(in_dim=4*node_embed_dim + edge_embed_dim + 4,
                            hidden_dims=msg_hidden,
                            out_dim=node_embed_dim)
-        # --- MODIFICATION END ---
-
-        # # symmetric phi -> must have same in/out dims
-        # # self.phi_symm = MLP(node_embed_dim, hidden_dims=(96,), out_dim=node_embed_dim)
-
-        # # edge encoder
-        # self.phi_edge = MLP(edge_attr_dim, hidden_dims=[edge_embed_dim], out_dim=edge_embed_dim)
-
-        # # message network: input = h_i | h_j | h_i+h_j | (h_i-h_j)^2 | eps_ij
-        # self.phi_msg = MLP(in_dim=4*node_embed_dim + edge_embed_dim,
-        #                    hidden_dims=msg_hidden,
-        #                    out_dim=node_embed_dim)
 
         # psi networks to produce flux amplitudes
         self.psi_rho  = MLP(in_dim=node_embed_dim, hidden_dims=[64], out_dim=1)
@@ -119,7 +109,6 @@ class EdgeFluxModule(nn.Module):
         src, dst = edge_index[0], edge_index[1]  # (E,)
         dev = node_u.device
 
-        # --- MODIFICATION START: Geometry & Physical Projection ---
         # 1. Geometry
         dx = edge_attr[:, 0].unsqueeze(-1)       # (E,1)
         dy = edge_attr[:, 1].unsqueeze(-1)       # (E,1)
@@ -139,22 +128,18 @@ class EdgeFluxModule(nn.Module):
         rhou_vec = curr_state[:, 3:5] # (N, 2) Normalized
 
         # 4. De-normalize to Physical Momentum to get correct Direction
-        # We need the physical sign to know if flow is entering/leaving
-        # (Handle stats which might be lists/floats)
+        # need the physical sign to know if flow is entering/leaving
         if not hasattr(self, '_stats_tensors'):
              self._stats_mean_mom = torch.tensor(stats["mean"]["momentum"], device=dev)
              self._stats_std_mom  = torch.tensor(stats["std"]["momentum"], device=dev)
-             # Cache to avoid recreating tensors every forward (optional but good for speed)
-             # Or just create them on the fly if stats change per batch (unlikely)
         
-        # Robust on-the-fly creation (safer if you switch devices)
         mean_mom = torch.as_tensor(stats["mean"]["momentum"], device=dev)
         std_mom  = torch.as_tensor(stats["std"]["momentum"], device=dev)
 
         rhou_phys = rhou_vec * std_mom + mean_mom  # (N, 2) Physical units
 
-        # 5. Project PHYSICAL Momentum onto Edge Basis
-        # This preserves the correct sign (direction) relative to the wall
+        # 5. Project PHYSICAL momentum onto edge basis
+        # preserves the correct sign (direction) relative to the wall
         rhou_src = rhou_phys[src] # (E, 2)
         rhou_dst = rhou_phys[dst] # (E, 2)
 
@@ -164,14 +149,11 @@ class EdgeFluxModule(nn.Module):
         mom_t_dst = (rhou_dst * t).sum(dim=-1, keepdim=True) # (E, 1)
         
         # 6. Re-scale for the Network
-        # rhou_phys is large. We want input ~ O(1).
-        # We divide by the magnitude of the momentum std.
-        # This is like Z-score normalizing, but WITHOUT shifting the mean.
-        # We KEEP the mean shift so that 0.0 really means "no flow".
+        # divide by the magnitude of the momentum std but WITHOUT shifting the mean.
+        # KEEP the mean shift so that 0.0 really means "no flow"
         scale_factor = torch.norm(std_mom) + 1e-8
         
         vel_proj = torch.cat([mom_n_src, mom_t_src, mom_n_dst, mom_t_dst], dim=-1) / scale_factor
-        # --- MODIFICATION END ---
 
         # node embeddings
         h = self.phi_node(node_u)                # (N, node_embed_dim)
@@ -187,39 +169,26 @@ class EdgeFluxModule(nn.Module):
         h_src = h[src]                             # (E, node_embed_dim)
         h_dst = h[dst]                             # (E, node_embed_dim)
 
-        # # compute transformed node features once
-        # h_transformed = self.phi_symm(h)  # (N, node_embed_dim)
-
-        # # gather for edges
-        # h_src_trans = h_transformed[src]
-        # h_dst_trans = h_transformed[dst]
-
-        # 1) deep-set symmetric combination -> tells the net: "we have high pressure here"
+        # 1) deep-set symmetric combination
         # v_avg = h_src_trans + h_dst_trans # (E, node_embed_dim)
         v_avg = h_src + h_dst # (E, node_embed_dim)
 
-        # 2) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
+        # 2) symmetric difference ("gradient" magnitude) -> "there is a shockwave here"
         # (h_src - h_dst)^2 is strictly symmetric
         v_diff = (h_src - h_dst).pow(2) # (E, node_embed_dim)
 
-        # 2.1) symmetric difference ("gradient" magnitude) -> tells the net: "there is a shockwave here"
-        # |h_src - h_dst| is strictly symmetric (shock sensor)
-        # v_diff = torch.abs(h_src - h_dst) # (E, node_embed_dim)
-
-        # --- MODIFICATION START: Symmetric Edge Encoding ---
-        # Only use 'r' for the geometry embedding. 
-        # The network now gets orientation info from 'vel_proj', not 'dx/dy'.
+        # Only use 'r' for the geometry embedding
+        # he network gets orientation info from 'vel_proj'.
         eps = self.phi_edge(r)                   # (E, edge_embed_dim)
         
         # Add vel_proj to the message input
-        msg_in = torch.cat([h_src, h_dst, v_avg, v_diff, eps, vel_proj], dim=-1) 
-        # --- MODIFICATION END ---
+        msg_in = torch.cat([h_src, h_dst, v_avg, v_diff, eps, vel_proj], dim=-1)
 
         m_ij = self.phi_msg(msg_in)              # (E, node_embed_dim)
 
-        # Edge Memory Logic
+        # Edge Memory logic
         if edge_memory is not None:
-            # Apply Residual + LayerNorm: LayerNorm(New + Old)
+            # Apply residual + LayerNorm: LayerNorm(New + Old)
             m_ij = self.memory_norm(m_ij + edge_memory)
             # pass
 
@@ -228,15 +197,6 @@ class EdgeFluxModule(nn.Module):
         a_e = self.psi_e(m_ij).squeeze(-1)     # (E,)
         a_rhou = self.psi_rhou(m_ij)             # (E,2) -> [a_n, a_t] (n, t local components of momentum flux)
 
-        # # compute unit normal n and tangential t from dx, dy
-        # dx = edge_attr[:, 0].unsqueeze(-1)       # (E,1)
-        # dy = edge_attr[:, 1].unsqueeze(-1)       # (E,1)
-        # r  = edge_attr[:, 2].unsqueeze(-1)       # (E,1) (distance)
-        # eps_r = 1e-12
-        # n = torch.cat([dx, dy], dim=-1) / (r + eps_r)  # (E,2) unit normal (source->dest)
-        # # tangential vector (90 deg rotation): t = (-n_y, n_x)
-        # t = torch.stack([-n[:, 1], n[:, 0]], dim=1)    # (E,2)
-
         # build vector fluxes
         F_rho = a_rho.unsqueeze(-1) * n           # (E,2)
         F_e = a_e.unsqueeze(-1) * n           # (E,2)
@@ -244,31 +204,6 @@ class EdgeFluxModule(nn.Module):
 
         # diffusion coefficient (artificial viscosity) shared among quantities
         alpha = torch.sigmoid(self.psi_visc(m_ij).squeeze(-1)).unsqueeze(-1)  # (E,1), in [0,1]
-
-        # MAX_ALPHA = 0.15
-        # alpha = alpha * MAX_ALPHA
-
-        # # density scale
-        # scale_rho = 1.0 + torch.abs(a_rho).unsqueeze(-1).detach()
-        
-        # # energy scale
-        # scale_e = 1.0 + torch.abs(a_e).unsqueeze(-1).detach()
-        
-        # # momentum scaler
-        # scale_rhou = 1.0 + torch.norm(F_rhou, dim=-1, keepdim=True).detach()
-
-        # # if node_u is 5 dim, use it all, if >5, take last 5
-        # if node_u.shape[1] > 5:
-        #      current_u = node_u[:, -5:] 
-        # else:
-        #      current_u = node_u
-
-        # # gather state
-        # u_src = current_u[src]
-        # u_dst = current_u[dst]
-        
-        # # calculate jump (vector of size 5)
-        # diff_u = u_dst - u_src # [rho, e, p, rhou_x, rhou_y]
 
         u_src_full = curr_state[src]
         u_dst_full = curr_state[dst]
@@ -283,16 +218,8 @@ class EdgeFluxModule(nn.Module):
         diff_rhou = diff_u[:, 3:5]              # (E, 2)
         
         # apply adaptive diffusion (per-channel)
-        # density: scale by density flux
-        # F_rho_final  = F_rho  - (alpha * scale_rho) * diff_rho * n
         F_rho_final  = F_rho  - alpha * diff_rho * n
-        
-        # energy: scale by energy flux
-        # F_e_final    = F_e    - (alpha * scale_e) * diff_e * n
         F_e_final    = F_e    - alpha * diff_e * n
-        
-        # momentum: scale by momentum flux
-        # F_rhou_final = F_rhou - (alpha * scale_rhou) * diff_rhou # momentum is already a vector, no need to multiply by n
         F_rhou_final = F_rhou - alpha * diff_rhou # momentum is already a vector, no need to multiply by n
 
         return {
@@ -335,7 +262,6 @@ class ConservativeMPLayer(nn.Module):
         device = node_state.device
         N = node_state.shape[0]
  
-        # take only edges with src < dst (one representative per undirected edge)
         src = edge_index[0]
         dst = edge_index[1]
         mask = src < dst
@@ -359,7 +285,6 @@ class ConservativeMPLayer(nn.Module):
         # face_length for 4-neighbour uniform grid equals r_edge
         face_length = r_edge     # (E_u,)
 
-        #NOTE: here it might be easier to directly read the a_* values from the out dict
         # compute scalar normal fluxes for scalars: a = <F, n>
         a_rho = (F_rho * n).sum(dim=-1)    # (E_u,)
         a_e = (F_e * n).sum(dim=-1)    # (E_u,)
@@ -446,14 +371,6 @@ class ConservativeMPLayer(nn.Module):
         # POSITIVITY
         rho_phys = torch.clamp(rho_phys, min=eps)
         e_phys   = torch.clamp(e_phys, min=eps)
-
-        # # VELOCITY CAP (prevent infinite speed explosion)
-        # u_vec = rhou_phys / rho_phys.unsqueeze(-1)
-        # u_mag = torch.norm(u_vec, dim=-1)
-        
-        # MAX_VEL = 100.0  # safe cap
-        # scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
-        # rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
 
         # 3) re-normalize back
         rho_new, e_new, _, rhou_new = norm(rho_phys, e_phys, None, rhou_phys, stats)
@@ -635,13 +552,6 @@ class FluxGNN(nn.Module):
         eps = 1e-6
         rho_phys = torch.clamp(rho_phys, min=eps)
         e_phys   = torch.clamp(e_phys, min=eps)
-        
-        # # VELOCITY CAP
-        # u_vec = rhou_phys / rho_phys.unsqueeze(-1)
-        # u_mag = torch.norm(u_vec, dim=-1)
-        # MAX_VEL = 100.0 
-        # scale_factor = torch.clamp(MAX_VEL / (u_mag + 1e-8), max=1.0)
-        # rhou_phys = rhou_phys * scale_factor.unsqueeze(-1)
 
         # renorm
         rho0, e0, _, rhou0 = norm(rho_phys, e_phys, None, rhou_phys, stats)

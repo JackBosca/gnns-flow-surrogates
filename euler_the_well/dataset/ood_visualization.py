@@ -1,9 +1,13 @@
+"""
+NOTE: in the final report plot some test points have been removed for clarity but are here kept for completeness.
+"""
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from matplotlib.lines import Line2D
 
-# build dataframe
+# build dataframe (values from means computations)
 data = [
     ("Train", 1.22, "C2H6_15", 0.92404, 0.85714, 4.09723, 0.51284),
     ("Valid", 1.22, "C2H6_15", 0.93030, 1.01129, 4.83320, 0.56921),

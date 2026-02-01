@@ -364,7 +364,7 @@ class EulerPeriodicDataset(Dataset):
 
         # read each timestep with read_direct
         for i in range(t_w):
-            # slice for scalar fields with stride: (sim_idx, t_idx+i, ::sh, ::sw)
+            # slice for scalar fields with strde: (sim_idx, t_idx+i, ::sh, ::sw)
             src_sel_scalar = np.s_[sim_idx, t_idx+i, ::self.sh, ::self.sw]
             d_density.read_direct(density[i], source_sel=src_sel_scalar)
             d_energy.read_direct(energy[i], source_sel=src_sel_scalar)
