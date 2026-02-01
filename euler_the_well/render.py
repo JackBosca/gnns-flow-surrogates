@@ -13,7 +13,6 @@ import os
 import argparse
 import numpy as np
 import matplotlib
-# Use Agg backend for headless high-quality rendering
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -109,7 +108,7 @@ def render_file(npz_path, out_dir, fps=None, size=(1920, 1080), skip=1,
     basename = os.path.splitext(os.path.basename(npz_path))[0]
     out_path = os.path.join(out_dir, f'{basename}.mp4')
 
-    # --- 1. Load Data ---
+    # Load Data
     data = _load_from_npz(npz_path)
     
     p_d = data["preds"]["d"]
@@ -142,13 +141,13 @@ def render_file(npz_path, out_dir, fps=None, size=(1920, 1080), skip=1,
     p_d, p_e, p_p, p_mmag = p_d[:T], p_e[:T], p_p[:T], p_mmag[:T]
     g_d_r, g_e_r, g_p_r, g_mmag_r = g_d_r[:T], g_e_r[:T], g_p_r[:T], g_mmag_r[:T]
 
-    # --- 2. Compute ROBUST Scales (GT Percentiles) ---
+    # compute scales
     lims_d = get_robust_limits(g_d_r, p_d)
     lims_e = get_robust_limits(g_e_r, p_e)
     lims_m = get_robust_limits(g_mmag_r, p_mmag)
     lims_p = get_robust_limits(g_p_r, p_p)
 
-    # --- 3. FPS & Setup ---
+    # fps
     dt = 0.015
     if fps is None:
         fps = 1.0 / (skip * dt)

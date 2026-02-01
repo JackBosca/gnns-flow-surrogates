@@ -1,0 +1,4 @@
+python: /home/boscario/miniconda3/envs/me402_conda/bin/python
+numpy: 1.26.4
+torch: 2.7.0+cu118 cuda_available: True
+torch_geometric: 2.7.0

@@ -1,0 +1,8 @@
+==== JOB START ====
+User: boscario
+Job: test_vrmse_gnn_flux (ID=2766230)
+Host: i01
+mar 30 déc 2025 23:15:51 CET
+CUDA_VISIBLE_DEVICES=0
+==== JOB END (exit code 0) ====
+mar 30 déc 2025 23:43:52 CET

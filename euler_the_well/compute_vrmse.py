@@ -92,10 +92,10 @@ def evaluate_one_step_vrmse(
     for i in range(steps):
         current_start = 0 + i
         
-        # 1. Load GT Window (Physical)
+        # 1. Load GT window (physical)
         window = dataset._load_time_window(sim_idx, current_start)
         
-        # 2. Normalize Input
+        # 2. normalize input
         if dataset.normalize and stats is not None:
             density  = (window["density"]  - stats["mean"]["density"])  / stats["std"]["density"]
             energy   = (window["energy"]   - stats["mean"]["energy"])   / stats["std"]["energy"]
@@ -125,19 +125,19 @@ def evaluate_one_step_vrmse(
         with torch.no_grad():
             out = model(data, stats)
 
-        # 3. Model Output (Normalized Absolute)
+        # 3. model output (normalized absoluten
         pred_norm_density  = out["density"].detach().cpu().numpy().reshape(Hc, Wc)
         pred_norm_energy   = out["energy"].detach().cpu().numpy().reshape(Hc, Wc)
         pred_norm_pressure = out["pressure"].detach().cpu().numpy().reshape(Hc, Wc)
         pred_norm_momentum = out["momentum"].detach().cpu().numpy().reshape(Hc, Wc, 2)
 
-        # 4. Get GT for Metrics (Physical)
+        # 4. get GT for metrics (physical)
         gt_d = window["density"][-1]
         gt_e = window["energy"][-1]
         gt_p = window["pressure"][-1]
         gt_m = window["momentum"][-1]
 
-        # 5. Denormalize Prediction for Comparison
+        # 5. denormalize prediction for comparison
         if dataset.normalize and stats is not None:
             pred_phys_d = _denormalize(pred_norm_density, stats["mean"]["density"], stats["std"]["density"])
             pred_phys_e = _denormalize(pred_norm_energy, stats["mean"]["energy"], stats["std"]["energy"])
@@ -271,14 +271,12 @@ def evaluate_autoregressive_vrmse_one_simulation(
 if __name__ == "__main__":
     from dataset.euler_coarse import EulerPeriodicDataset
     from model.invariant_gnn_flux import FluxGNN
-
-    # --- Configuration ---
     
-    # 1. EVALUATION MODE: "one_step" or "autoregressive"
+    # 1. evaluation mode: "one_step" or "autoregressive"
     EVALUATION_MODE = "autoregressive" 
     # EVALUATION_MODE = "one_step"
 
-    # 2. Windows for autoregressive evaluation (start_t, end_t) inclusive
+    # 2. windows for autoregressive evaluation (start_t, end_t) inclusive
     AUTO_REG_WINDOWS = [(6, 12), (13, 30)]
 
     # 3. Data & Model Paths
@@ -296,8 +294,7 @@ if __name__ == "__main__":
     ]
     
     stats_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/stats.yaml"
-    # checkpoint_path = "./checkpoints/Dry_air_20_5UNROLLED_model_flux_n-datasets_1_forcing_1.0_time-window_7_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_7.pt"
-    checkpoint_path = "./checkpoints/C2H6_15_Dry_air_20_5UNROLLED_model_flux_n-datasets_2_forcing_1.0_time-window_7_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_3.pt"
+    checkpoint_path = "./jobs/Dry_air_20_5UNROLLED_model_flux_n-datasets_1_forcing_1.0_time-window_7_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_7.pt"
 
     time_window = 2
     coarsen = (4,4)
@@ -306,15 +303,11 @@ if __name__ == "__main__":
     print(f"Initializing Model... Mode: {EVALUATION_MODE}")
     temp_ds = EulerPeriodicDataset(test_h5_paths[0], stats_path=stats_path, time_window=time_window, 
                                    target=target, normalize=True, coarsen=coarsen, to_centroids=True)
-    
-    sample = temp_ds[0]
-    gamma_val = 1.4 
 
     model = FluxGNN(node_in_dim=(time_window-1)*5, 
                     node_embed_dim=64,
                     n_layers=12,
                     dataset_dt=0.015,
-                    # gamma=gamma_val, 
                     )
 
     # Load Weights
@@ -333,7 +326,6 @@ if __name__ == "__main__":
     model = model.to(device)
     model.eval()
 
-    # --- Benchmark Loop ---
     print(f"\nStarting {EVALUATION_MODE} Benchmark on {len(test_h5_paths)} files...")
     print("-" * 60)
 
@@ -385,7 +377,6 @@ if __name__ == "__main__":
             breakdown = ", ".join([f"Win {k}: {np.mean(v):.4f}" for k, v in file_window_agg.items() if v])
             print(f"    > Breakdown: {breakdown}")
 
-    # --- Final Report ---
     print("=" * 60)
     print(f"FINAL RESULTS ({EVALUATION_MODE})")
     print("=" * 60)

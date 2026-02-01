@@ -94,37 +94,8 @@ def rollout_one_simulation(
             target = (last - first) in normalized space
         else:
             target = last (absolute, normalized if dataset.normalize)
-    - This rollout uses the same convention:
-    - At iteration i, the model is given the current window excluding the last
-        (same x as __getitem__). The model predicts the "last" timestep for the
-        current window. Then append the predicted last, drop the first, and
-        continue -> this advances the window by 1 timestep.
     - RMSE metrics are computed only when ground-truth exists (i.e., predicted
     timestep < dataset.n_t). If ground-truth is missing for a step, RMSE is set to np.nan.
-
-    Returns structure:
-        {
-          "predictions": {
-              "density": list of arrays (Hc,Wc) per predicted step (denorm if requested),
-              "energy": [...],
-              "pressure": [...],
-              "momentum": list of arrays (Hc,Wc,2)
-          },
-          "ground_truth": {
-                "density": list of arrays (Hc,Wc) per predicted step (physical units),
-                "energy": [...],
-                "pressure": [...],
-                "momentum": list of arrays (Hc,Wc,2)
-            },
-          "metrics": {
-              "rmse_density": np.array([...]),
-              "rmse_energy": ...,
-              "rmse_pressure": ...,
-              "rmse_momentum_x": ...,
-              "rmse_momentum_y": ...
-          },
-          "timesteps": np.array([...])  # absolute timestep index predicted for each step
-        }
     """
     device = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
     model.eval()
@@ -372,12 +343,6 @@ def evaluate_one_step(
     Evaluate 1-step predictions: for each step i, load ground-truth window starting at
     (start_t + i), feed the model the input window (density[:-1], energy[:-1], pressure[:-1], mom_ch[:-2])
     and predict the last timestep. Compute RMSE against the true last timestep.
-
-    Returns same structure as rollout_one_simulation:
-      { "predictions": { "density": [...], ... },
-        "ground_truth": { "density": [...], ... },
-        "metrics": { "rmse_density": np.array([...]), ... },
-        "timesteps": np.array([...]) }
     """
     device = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
     model.eval()
@@ -446,7 +411,6 @@ def evaluate_one_step(
         with torch.no_grad():
             out = model(data, stats)
 
-        # FluxGNN returns absolute U_final regardless of dataset.target setting
         pred_last_density  = out["density"].detach().cpu().numpy().reshape(Hc, Wc)
         pred_last_energy   = out["energy"].detach().cpu().numpy().reshape(Hc, Wc)
         pred_last_pressure = out["pressure"].detach().cpu().numpy().reshape(Hc, Wc)
@@ -571,21 +535,15 @@ def evaluate_one_step(
 
 if __name__ == "__main__":
     from dataset.euler_coarse import EulerPeriodicDataset
-    # from model.visc_gnn_flux import FluxGNN
-    # from model.memory_gnn_flux import FluxGNN
-    # from model.memory_invariant_gnn_flux import FluxGNN
-    # from model.memory_invariant_hll_gnn_flux import FluxGNN
     from model.invariant_gnn_flux import FluxGNN
-    # from model.invariant_upwind_gnn_flux import FluxGNN
-    # from model.invariant_hll_gnn_flux import FluxGNN
 
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/valid/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.22_C2H6_15.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/train/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
-    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
+    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.4_Dry_air_20.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.453_H2_-76.hdf5"
-    h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.597_H2_-181.hdf5"
+    # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.597_H2_-181.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.76_Ar_-180.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.13_C3H8_16.hdf5"
     # h5_path = "/work/imos/datasets/euler_multi_quadrants_periodicBC/data/test/euler_multi_quadrants_periodicBC_gamma_1.404_H2_100_Dry_air_-15.hdf5"
@@ -603,28 +561,15 @@ if __name__ == "__main__":
                             to_centroids=True)
     print(f"Datset Hc, Wc: {ds.Hc}, {ds.Wc}")
 
-    # get a sample for input/global dims
-    sample = ds[0]
-    input_node_feats = sample.x.shape[1]  # node input dim (C_in)
-
-    # read gamma if provided in sample.u else default
-    gamma_val = None
-    if getattr(sample, "u", None) is not None:
-        try:
-            gamma_val = float(sample.u[0, 0].item())
-        except Exception:
-            gamma_val = None
-
     # instantiate FluxGNN
     model = FluxGNN(node_in_dim=5,
                     node_embed_dim=64,
                     n_layers=12,
                     dataset_dt=0.015,
-                    # gamma=(gamma_val if gamma_val is not None else 1.4),
                     )
  
     # --- robust model loader ---
-    checkpoint_path = "./checkpoints/Dry_air_20_5UNROLLED_model_flux_n-datasets_1_forcing_1.0_time-window_7_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_7.pt"
+    checkpoint_path = "./jobs/Dry_air_20_5UNROLLED_model_flux_n-datasets_1_forcing_1.0_time-window_7_coarsen_4-4_target_delta_centroids_True_layers_12_epoch_7.pt"
 
     # 1) load the file (map to cpu first)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
@@ -637,7 +582,6 @@ if __name__ == "__main__":
         elif "state_dict" in ckpt:
             state_dict = ckpt["state_dict"]
         else:
-            # your training saved model.state_dict() directly, so ckpt is the state_dict
             state_dict = ckpt
     else:
         state_dict = ckpt
@@ -651,14 +595,12 @@ if __name__ == "__main__":
     model = model.to(device)
     model.eval()
     
-    sim_idx = 15
+    sim_idx = 3
     t_idx = 0
-    # save_path = f"./rollouts/TEST.npz"
-    save_path = f"./rollouts_1-step/TEST.npz"
-    # save_path = f"./rollouts_1-step/rollout_1-step_sim{sim_idx}_t{t_idx}_time-window_{time_window}_coarsen_{coarsen[0]}-{coarsen[1]}_target_{target}_valid.npz"
+    save_path = f"./rollouts/dry_air_test_rollout.npz"
 
     # perform rollout of first sim starting from t=0
-    # rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
-    evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    rollout_one_simulation(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
+    # evaluate_one_step(model, ds, sim_idx=sim_idx, start_t=t_idx, save_path=save_path)
 
     print("Rollout done.")

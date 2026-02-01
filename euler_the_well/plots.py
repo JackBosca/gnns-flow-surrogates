@@ -38,7 +38,6 @@ def plot_losses(losses_path='checkpoint', save_path="loss_plot.png", show=False,
 
     plt.figure(figsize=(10, 5))
     
-    # Professional Scientific Style: Deep blue color, slightly thicker line
     plt.plot(losses, label='Training Loss', color='#005b96', linewidth=2)
     
     plt.xlabel('Batch Index', fontsize=18)
@@ -48,7 +47,6 @@ def plot_losses(losses_path='checkpoint', save_path="loss_plot.png", show=False,
 
     plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
     
-    # Remove top and right spines for a cleaner look
     plt.gca().spines['top'].set_visible(False)
     plt.gca().spines['right'].set_visible(False)
 

@@ -7,15 +7,8 @@ import torch.nn.functional as F
 from torch.utils.data import ConcatDataset
 from torch_geometric.loader import DataLoader
 from dataset.euler_coarse import EulerPeriodicDataset
-# from model.visc_gnn_flux import FluxGNN
-# from model.memory_gnn_flux import FluxGNN
-# from model.memory_invariant_gnn_flux import FluxGNN
 from model.invariant_gnn_flux import FluxGNN
-# from model.invariant_upwind_gnn_flux import FluxGNN
-# from model.invariant_hll_gnn_flux import FluxGNN
-# from model.invariant_rusanov_gnn_flux import FluxGNN
-# from model.memory_invariant_hll_gnn_flux import FluxGNN
-from rollout import rollout_one_simulation
+from rollout_one_simulation import rollout_one_simulation
 from utils import teacher_forcing_schedule, autoregressive_pred
 from utils_flux import train_one_epoch_unrolled
 
@@ -130,11 +123,6 @@ def train_one_epoch(model, dataloader, stats, optimizer, device,
             p_energy  = delta_U[:, 1]
             p_momentum = delta_U[:, 2:4]
             
-            # FluxGNN does NOT output delta_pressure directly in delta_U.
-            # calculate it: P_pred_delta = P_final_absolute - P_initial_absolute
-            # P_final_absolute is in preds["pressure"]
-            # P_initial_absolute is the last pressure channel in input x
-            
             # index of the most recent pressure in input features
             last_p_idx = p_end - 1 
             p0_norm = batch.x[:, last_p_idx] 
@@ -159,9 +147,6 @@ def train_one_epoch(model, dataloader, stats, optimizer, device,
             + loss_weights.get("pressure") * mse_pressure
             + loss_weights.get("momentum") * mse_momentum
         )
-
-        # add viscosity penalty
-        # loss = loss + viscosity_penalty
 
         if not torch.isfinite(loss): # check for Inf/NaN
             print(f"\n⚠️ Non-finite loss (Inf/NaN) at step {step+1}: {loss.item()}. Skipping batch.")
@@ -378,25 +363,12 @@ if __name__ == "__main__":
  
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
 
-    # get a sample for input/global dims
-    sample = train_dataset[0]
-    input_node_feats = sample.x.shape[1]  # node input dim (C_in)
     stats = train_datasets[0].stats  # dataset stats for denorm/norm
 
     # inspect stats
     print(f"Stats keys: {list(stats.keys())}")
     for key, value in stats.items():
         print(f"  {key}: {value}")
-
-    # read gamma if provided in sample.u else default
-    gamma_val = None
-    if getattr(sample, "u", None) is not None:
-        try:
-            gamma_val = float(sample.u[0, 0].item())
-        except Exception:
-            gamma_val = None
-
-    print(f"Using gamma: {gamma_val}")
 
     n_layers=12
 
@@ -405,7 +377,6 @@ if __name__ == "__main__":
                     node_embed_dim=64,
                     n_layers=n_layers,
                     dataset_dt=0.015,
-                    # gamma=(gamma_val if gamma_val is not None else 1.4),
                     )
 
     # use AdamW optimizer
