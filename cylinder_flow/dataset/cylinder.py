@@ -237,7 +237,6 @@ class IndexedTrajectoryDataset(Dataset):
             ndim = ds.ndim
             shape = tuple(ds.shape)
         except Exception:
-            # in the case ds isn't a proper h5py.Dataset, fall back to reading
             arr = ds[()] if hasattr(ds, '__call__') or hasattr(ds, '__array__') else ds
             if self.cache_static:
                 self._static_cache.setdefault(traj_key, {})[name] = arr
@@ -246,14 +245,12 @@ class IndexedTrajectoryDataset(Dataset):
         # number of frames in this trajectory
         n_frames = int(meta.get('n_frames', -1))
 
-        # -- 0-d or scalar datasets --
         if ndim == 0:
             arr = ds[()]  # scalar -> broadcast downstream if needed
             if self.cache_static:
                 self._static_cache.setdefault(traj_key, {})[name] = arr
             return arr
 
-        # -- 1-d datasets: either per-node or per-frame --
         if ndim == 1:
             if shape[0] == n_nodes:
                 # per-node static vector
@@ -265,13 +262,11 @@ class IndexedTrajectoryDataset(Dataset):
                 # per-frame 1D -> pick frame t
                 return ds[t]
             else:
-                # unknown: read everything (fallback)
                 arr = ds[()]
                 if self.cache_static:
                     self._static_cache.setdefault(traj_key, {})[name] = arr
                 return arr
 
-        # -- 2-d datasets: usually static per-node (n_nodes, k) or (n_faces,3) --
         if ndim == 2:
             # many cases: (n_nodes, dim) static pos, (n_faces,3) static cells, (n_nodes, k) node_type
             # treat 2D as static and cache it.
@@ -280,7 +275,6 @@ class IndexedTrajectoryDataset(Dataset):
                 self._static_cache.setdefault(traj_key, {})[name] = arr
             return arr
 
-        # -- 3-d datasets: (n_frames, n_nodes, dim) or (n_frames, n_faces, 3) or (n_frames, n_nodes, k) --
         if ndim == 3:
             # compare first and last frames to decide if static (cheap check)
             first = ds[0]
@@ -413,8 +407,6 @@ class IndexedTrajectoryDataset(Dataset):
 
             # normalize shape / one-hot / scalar label
             node_type = self._normalize_node_type(raw_nt, n_nodes)
-            # note: _load_and_maybe_cache has already cached raw_nt if it decided it's static
-            # and cache_static=True -> cache the normalized node_type
             if self.cache_static and traj_key in self._static_cache and 'node_type' not in self._static_cache[traj_key]:
                 # store normalized version
                 self._static_cache.setdefault(traj_key, {})['node_type'] = node_type
@@ -424,7 +416,7 @@ class IndexedTrajectoryDataset(Dataset):
         
         data = self._datas_to_graph(pos, node_type, vel_t, vel_tp1, cells, press_t, time_scalar)
 
-        # only cache edge_index/edge_attr (transform outputs) per trajectory when cache_static=True
+        # only cache edge_index/edge_attr (transform outputs) per traectory when cache_static=True
         if self.transform is not None:
             traj_key = self.traj_keys[traj_pos]
             # ensure there is a dict for this trajectory
@@ -432,7 +424,6 @@ class IndexedTrajectoryDataset(Dataset):
 
             # if already cached transform outputs for this trajectory, reuse them
             if self.cache_static and ('edge_index' in traj_cache):
-                # attach cached fields to data (avoid re-running the transform)
                 data.edge_index = traj_cache['edge_index']
                 # edge_attr may be None if transform didn't produce it
                 if 'edge_attr' in traj_cache and traj_cache['edge_attr'] is not None:
@@ -446,7 +437,6 @@ class IndexedTrajectoryDataset(Dataset):
                     # save edge_index and edge_attr (if present) for reuse
                     traj_cache['edge_index'] = data.edge_index
                     traj_cache['edge_attr'] = getattr(data, 'edge_attr', None)
-                    # also keep pos/cells/node_type if not already cached (your _load_and_maybe_cache may have done this)
                     traj_cache.setdefault('pos', pos)
                     traj_cache.setdefault('cells', cells)
                     traj_cache.setdefault('node_type', node_type)

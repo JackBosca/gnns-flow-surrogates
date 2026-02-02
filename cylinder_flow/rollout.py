@@ -1,5 +1,5 @@
 """
-Rollout script for MeshGraphNets architecture for the flow past a cylinder problem.
+Rollout script for MeshGraphNets archiecture for the flow past a cylinder problem.
 """
 import os
 import argparse

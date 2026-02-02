@@ -58,14 +58,14 @@ class NodeBlock(nn.Module):
         # pass through the network to update node attributes
         x = self.net(collected_nodes)
 
-        # return updated graph
+        # return updted graph
         return Data(x=x, edge_attr=edge_attr, edge_index=graph.edge_index)
        
 def build_mlp(in_size, hidden_size, out_size, num_hidden_layers=3, lay_norm=True):
     layers = [nn.Linear(in_size, hidden_size), nn.ReLU()]
     
     # Add hidden layers dynamically
-    for _ in range(num_hidden_layers - 1):  # already added the first hidden layer
+    for _ in range(num_hidden_layers - 1):  # already added the first hiddn layer
         layers.append(nn.Linear(hidden_size, hidden_size))
         layers.append(nn.ReLU())
     

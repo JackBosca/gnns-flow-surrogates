@@ -76,10 +76,10 @@ class GNNBlock(nn.Module):
     def __init__(self, hidden_size=128):
         super(GNNBlock, self).__init__()
 
-        # define input dimension for edges: 3*hidden_size (sender features, receiver features, edge_attr)
+        # define input dimension foredges: 3*hidden_size (sender features, receiver features, edge_attr)
         eb_input_dim = 3 * hidden_size
 
-        # define input dimension for nodes: 2*hidden_size (node features, aggregated edge features)
+        # define input diension for nodes: 2*hidden_size (node features, aggregated edge features)
         nb_input_dim = 2 * hidden_size
 
         # build edge and node MLPs
