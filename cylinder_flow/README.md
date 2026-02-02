@@ -4,7 +4,7 @@
 
 This folder contains a PyTorch implementation of a MeshGraphNets model for the 2D incompressible flow-past-a-cylinder problem.
 
-## Repository layout (relevant files)
+## Repository layout
 
 ```
 .
@@ -24,6 +24,7 @@ This folder contains a PyTorch implementation of a MeshGraphNets model for the 2
 │   └── parse_tfrecord.py   # converts tfrecord -> HDF5 (one group per trajectory)
 ├── utils/
 │   └── utils.py            # NodeType enum, Normalizer(s), graph utils, noise helper
+├── jobs/                   # Contains model weights, rollouts and videos
 └── results_*/              # result plots 50-100% training data
 ```
 
