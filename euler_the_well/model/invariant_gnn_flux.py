@@ -50,10 +50,6 @@ class EdgeFluxModule(nn.Module):
     """
     Build symmetric pairwise messages and produce per-edge shared fluxes:
     density/energy amplitudes (scalars) and vector momentum flux (2D).
-    Inputs:
-        - node_u: (N, node_in_dim) conserved variables per node (e.g. [rho, e, p, rho_u_x, rho_u_y])
-        - edge_index: (2, E) long tensor
-        - edge_attr: (E, 3) float tensor with [dx, dy, r]
     Outputs:
         dict with keys:
             "a_rho": (E,) mass flux scalar amplitude (normal component)
@@ -255,6 +251,7 @@ class ConservativeMPLayer(nn.Module):
             dt: time step (float)
             cell_area: None or tensor (N,) or float. If None, assumed uniform and area = mean(r)^2 approximated.
             dt_cfl: optional CFL condition scalar upper bound on dt (float). If provided, dt = min(dt, dt_cfl).
+            edge_memory: used to implement spatio-temporal edge memory
         Returns:
             node_u_new: (N,5) updated conserved variables
             diagnostics: dict with dt, optional flux norms
@@ -399,21 +396,19 @@ class FluxGNN(nn.Module):
     Args:
         node_embed_dim: internal node embedding size used by EdgeFluxModule (defaults 64)
         n_layers: number of conservative message-passing layers
-        dt_max: maximum learned dt per layer (passed to ConservativeMPLayer)
+        dataset_dt: float, time step used in the dataset (used to compute per-layer dt)
     """
     def __init__(self,
                  node_in_dim=5,
                  node_embed_dim=64,
                  n_layers=4,
-                 dataset_dt=0.015,
-                 gamma=None):
+                 dataset_dt=0.015):
         super().__init__()
 
         self.node_in_dim = node_in_dim # > 5 if time_window>2
         self.node_embed_dim = node_embed_dim
         self.n_layers = int(n_layers)
         self.dataset_dt = float(dataset_dt)
-        # self.gamma = float(gamma) if gamma is not None else None
         
         # calculate the required step per layer
         self.fixed_dt_per_layer = self.dataset_dt / self.n_layers
@@ -476,7 +471,7 @@ class FluxGNN(nn.Module):
         Computes the maximum allowable dt based on the CFL condition.
         dt <= CFL * min( dx / (|u| + c) )
         """
-        with torch.no_grad(): # detach from graph -> don't backprop through the limit constraint
+        with torch.no_grad(): # detach from graph -> don't backprop through the limit costraint
             # recover physical primitives
             rho_norm = U[:, 0]
             p_norm = U[:, 2]
@@ -525,10 +520,12 @@ class FluxGNN(nn.Module):
               'U0': initial conserved U (N,4)
               'U_final': final conserved U after layers (N,4)
               'delta_U': (N,4) = U_final - U0
-              'rho': (N,) reconstructed density from U_final
+              'density': (N,) reconstructed density from U_final
               'energy': (N,) reconstructed total energy from U_final
+              'pressure': (N,) reconstructed pressure from U_final
               'momentum': (N,2) reconstructed momentum from U_final
               'dt_layers': list of dt per layer (floats)
+              'mean_alpha': global mean diffusion coefficient across all layers (float)
         """
         device = data.x.device if isinstance(data.x, torch.Tensor) else torch.device("cpu")
         x_nodes = data.x.to(device)
