@@ -11,9 +11,9 @@ This folder contains a PyTorch implementation of a MeshGraphNets model for the 2
 ├── train.py                # training script
 ├── rollout.py              # inference / rollout
 ├── validation.py           # validation utilities
-├── render.py               # low-level rendering helpers
+├── render.py               # standard rendering script
 ├── render_report.py        # render frames/videos for final report
-├── plots.py                # generic plotting utilities
+├── plots.py                # learning curves plots
 ├── model/
 │   ├── blocks.py           # EdgeBlock, NodeBlock, MLP builder utilities
 │   └── model.py            # Simulator wrapper + Encoder/Processor/Decoder
@@ -72,7 +72,7 @@ Basic training command (examples):
 ```bash
 # minimal example (adjust dataset path, GPU environment, workers)
 python train.py \
-  --dataset-dir /path/to/h5_output \
+  --dataset-dir /path/to/h5_file \
   --batch-size 1 \
   --max-epochs 10 \
   --save-dir checkpoint \
@@ -80,7 +80,7 @@ python train.py \
   --workers 8
 ```
 
-Important `train.py` flags (non-exhaustive):
+Important `train.py` flags:
 
 * `--dataset-dir` : path to HDF5 dataset directory
 * `--batch-size`  : training batch size
@@ -107,7 +107,7 @@ Example:
 ```bash
 python rollout.py \
   --model_dir checkpoint/simulator.pth \
-  --dataset_dir /path/to/h5_output \
+  --dataset_dir /path/to/h5_file \
   --test_split test \
   --rollout_num 5 \
   --gpu 0 \
@@ -118,9 +118,8 @@ Important `rollout.py` flags:
 
 * `--model_dir`    : path to saved model checkpoint (simulator file)
 * `--dataset_dir`  : path to dataset HDF5
-* `--test_split`   : `train|valid|test`
+* `--test_split`   : `train`, `valid`, `test`
 * `--rollout_num`  : how many trajectories to rollout (first N)
-* `--preserve_one_hot` : pass `preserve_one_hot` to dataset (if used)
 * `--cache_static` : cache static arrays (positions/cells/node_type) in memory
 
 Outputs:
@@ -135,7 +134,7 @@ Validation helper:
 
 ## Rendering and plots
 
-Generate frames/videos from rollout `.pkl` results with `render_report.py` (suitable for report-quality images) or `render.py` for lower-level utilities.
+Generate frames/videos from rollout `.pkl` results with `render_report.py` (suitable for report-quality images) or the standard `render.py`.
 
 Example (render directory of pickles -> video frames/video):
 

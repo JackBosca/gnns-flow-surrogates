@@ -2,8 +2,8 @@
 
 ## Overview
 
-This folder contains a PyTorch implementation of a **Flux-Conservative Graph Neural Network** designed for 2D compressible Euler gases using the *The Well* periodic multi-quadrant HDF5 dataset.
-The model enforces flux-conservative updates on a structured/coarsened grid represented as a graph (4-neighbour connectivity), and is trained with N-step unrolled teacher-forcing to improve autoregressive rollout stability.
+This folder contains a PyTorch implementation of the **Flux Conservative Graph Neural Network** model designed for 2D compressible Euler gases using the *The Well* periodic multi-quadrant HDF5 dataset.
+The model enforces flux-conservative updates on a coarsened grid represented as a graph (4-neighbour connectivity), and is trained with N-step unrolled teacher-forcing to improve autoregressive rollout stability.
 
 ---
 
@@ -13,7 +13,7 @@ The model enforces flux-conservative updates on a structured/coarsened grid repr
 .
 ├── train_flux.py                 # training script
 ├── rollout_flux.py               # rollout / evaluation script
-├── rollout_one_simulation.py     # rollout helper that returns/saves .npz results
+├── rollout_one_simulation.py     # rollout helper for optional validation
 ├── compute_vrmse.py              # VRMSE / RMSE utilities (evaluate rollouts)
 ├── render.py                     # render high-quality videos (8-panel style)
 ├── render_report.py              # report-quality rendering script (frames & video)
@@ -42,17 +42,17 @@ The dataset can be downloaded from <https://polymathic-ai.org/the_well/tutorials
 
 Top-level groups used:
 
-* `t0_fields/` — scalar fields used as inputs:
+* `t0_fields/`: scalar fields used as inputs:
 
-  * `t0_fields/density`  — shape `(n_sims, n_t, H, W)` (float32)
-  * `t0_fields/energy`   — shape `(n_sims, n_t, H, W)`
-  * `t0_fields/pressure` — shape `(n_sims, n_t, H, W)`
-* `t1_fields/` — vector fields (momentum):
+  * `t0_fields/density`: shape `(n_sims, n_t, H, W)` (float32)
+  * `t0_fields/energy`: shape `(n_sims, n_t, H, W)`
+  * `t0_fields/pressure`: shape `(n_sims, n_t, H, W)`
+* `t1_fields/`: vector fields (momentum):
 
-  * `t1_fields/momentum` — shape `(n_sims, n_t, H, W, 2)` (float32)
-* `geometry/` — `x`, `y` coordinate arrays used to build pos templates (the dataset class caches `pos_template`).
-* `boundary_conditions/` — periodic masks (used to handle boundaries when coarsening).
-* `scalars/gamma` — scalar (e.g. specific gas gamma) used as a global feature.
+  * `t1_fields/momentum`: shape `(n_sims, n_t, H, W, 2)` (float32)
+* `geometry/`: `x`, `y` coordinate arrays used to build pos templates (the dataset class caches `pos_template`).
+* `boundary_conditions/`: periodic masks (used to handle boundaries when coarsening).
+* `scalars/gamma`: scalar (e.g. specific gas gamma) used as a global feature.
 * `scalars` and `boundary_conditions` keys are used by `EulerPeriodicDataset` when present.
 
 Notes about `EulerPeriodicDataset`:
@@ -63,10 +63,10 @@ Notes about `EulerPeriodicDataset`:
 * `to_centroids=True` converts vertex-centered fields to cell-centered values when needed.
 * The dataset returns PyG `Data` objects with:
 
-  * `x` — per-node stacked input channels (history window flattened)
-  * `edge_index`, `edge_attr` — 4-neighbour grid connectivity and attributes (dx, dy, r)
+  * `x`: per-node stacked input channels (history window flattened)
+  * `edge_index`, `edge_attr`: 4-neighbour grid connectivity and attributes (dx, dy, r)
   * optional global features (e.g. gamma/time)
-  * `y_*` targets for density / energy / pressure / momentum when applicable
+  * `y_*`: targets for density, energy, pressure, momentum
 
 ---
 
@@ -86,7 +86,7 @@ Example configuration used in the experiments (these are the defaults in the scr
 * `target = "delta"` (predict delta updates)
 * `to_centroids = True` (use cell-centered values)
 * `batch_size = 1` (DataLoader batch size)
-* `n_layers = 12` (FluxGNN depth)
+* `n_layers = 12` (model depth)
 * optimizer: `AdamW(lr=1e-4, weight_decay=1e-5)`
 * `epochs = 30` (script default)
 * `teacher_forcing_start = 1.0` (full teacher forcing at epoch 0)
@@ -131,9 +131,9 @@ Behavior / outputs:
 
 ## Rendering and plots
 
-* `render.py` — renders an 8-panel video for a rollout `.npz` (high-resolution, report style).
-* `render_report.py` — convenience script to produce frames and a video from rollouts.
-* `plots.py` — plots training losses found in the checkpoint/loss files.
+* `render.py`: renders an 8-panel video for a rollout `.npz`.
+* `render_report.py`: convenience script to produce frames and a video from rollouts for the final report.
+* `plots.py`: plots training losses found in the checkpoint/loss files.
 
 Typical rendering usage (edit paths inside `render_report.py` to point to your `.npz` rollouts):
 
@@ -141,7 +141,6 @@ Typical rendering usage (edit paths inside `render_report.py` to point to your `
 python render_report.py \
   --results-dir ./rollouts/ \
   --out-dir ./videos/ \
-  --fps 25 \
   --size 1920 1080 \
   --skip 1
 ```
@@ -177,11 +176,7 @@ There is a experimental EGNN wrapper (`model/egnn_state.py`) included for refere
 
 ## Checkpoints & reproducibility
 
-* The training script composes checkpoint/loss filenames from the `fname` and `floss` variables. Inspect the bottom of `train_flux.py` to see exact naming. Save locations can be changed inside that script.
-* To reproduce results, keep:
-
-  * the exact `coarsen` and `time_window` parameters used during training
-  * any random seeds (script uses `random` and `numpy` seeds near the top for deterministic runs).
+The training script composes checkpoint/loss filenames from the `fname` and `floss` variables. Inspect the bottom of `train_flux.py` to see exact naming. Save locations can be changed inside that script.
 
 ---
 
